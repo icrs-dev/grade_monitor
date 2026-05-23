@@ -1,0 +1,24 @@
+# 排除敏感配置文件（最重要！）
+telegram.conf
+config.ini
+config.json
+
+# 排除脚本运行产生的临时目录和文件
+.tmp/
+data/
+*.png
+*.jpg
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 排除版本控制系统
+.git/
+.gitignore
+
+# 排除本地虚拟环境
+venv/
+.env

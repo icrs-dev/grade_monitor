@@ -1,0 +1,1368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CloudMarking 云阅卷</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: { sans: ['"SF Pro Display"','"PingFang SC"','"Microsoft YaHei"', 'sans-serif'] },
+    }
+  }
+}
+</script>
+<style>
+  :root {
+    --glass-bg: rgba(255,255,255,0.10);
+    --glass-border: rgba(255,255,255,0.18);
+    --glass-highlight: rgba(255,255,255,0.25);
+    --glass-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  }
+  body {
+    min-height: 100vh;
+    background-attachment: fixed;
+  }
+  body::before {
+    content: '';
+    position: fixed; top: 0; left: 0;
+    width: 100%; height: 100%;
+    background-image: var(--bing-wallpaper);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    filter: brightness(0.35) saturate(0.8);
+    z-index: -1;
+  }
+  body::after {
+    content: '';
+    position: fixed; top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: radial-gradient(circle at 20% 30%, rgba(120,80,255,0.12) 0%, transparent 50%),
+                radial-gradient(circle at 80% 60%, rgba(0,200,255,0.08) 0%, transparent 50%),
+                radial-gradient(circle at 40% 80%, rgba(255,100,180,0.06) 0%, transparent 50%);
+    pointer-events: none; z-index: -1;
+  }
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    box-shadow: var(--glass-shadow);
+  }
+  .glass-card {
+    background: rgba(255,255,255,0.07);
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 16px;
+    transition: all 0.3s ease;
+  }
+  .glass-card:hover {
+    background: rgba(255,255,255,0.13);
+    border-color: rgba(255,255,255,0.25);
+    transform: translateY(-2px);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+  }
+  .glass-input {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 12px;
+    color: #e0e0ff;
+    padding: 10px 16px;
+    width: 100%;
+    outline: none;
+    transition: all 0.25s;
+    font-size: 15px;
+  }
+  .glass-input:focus {
+    border-color: rgba(140,140,255,0.6);
+    background: rgba(255,255,255,0.10);
+    box-shadow: 0 0 20px rgba(120,80,255,0.2);
+  }
+  .glass-input::placeholder { color: rgba(200,200,240,0.4); }
+
+  .glass-btn {
+    background: linear-gradient(135deg, rgba(120,80,255,0.5), rgba(80,60,220,0.5));
+    border: 1px solid rgba(140,130,255,0.3);
+    border-radius: 12px;
+    color: #e8e0ff;
+    padding: 10px 24px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.25s;
+    backdrop-filter: blur(8px);
+  }
+  .glass-btn:hover {
+    background: linear-gradient(135deg, rgba(140,100,255,0.65), rgba(100,80,240,0.65));
+    border-color: rgba(160,150,255,0.5);
+    box-shadow: 0 4px 24px rgba(120,80,255,0.35);
+  }
+  .glass-btn:disabled {
+    opacity: 0.4; cursor: not-allowed;
+  }
+  .glass-btn.danger {
+    background: linear-gradient(135deg, rgba(255,80,100,0.4), rgba(200,50,80,0.4));
+    border-color: rgba(255,130,140,0.3);
+  }
+  .glass-btn.success {
+    background: linear-gradient(135deg, rgba(0,200,150,0.4), rgba(0,160,120,0.4));
+    border-color: rgba(100,230,180,0.3);
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fade-up { animation: fadeUp 0.4s ease-out; }
+
+  @keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 8px rgba(120,80,255,0.3); }
+    50% { box-shadow: 0 0 22px rgba(120,80,255,0.55); }
+  }
+  .pulse-glow { animation: pulse-glow 2s infinite; }
+
+  .step-dot {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700;
+    background: rgba(255,255,255,0.08);
+    border: 2px solid rgba(255,255,255,0.2);
+    color: rgba(255,255,255,0.4);
+    transition: all 0.3s;
+  }
+  .step-dot.active {
+    background: rgba(120,80,255,0.5);
+    border-color: rgba(150,130,255,0.7);
+    color: #fff;
+    box-shadow: 0 0 16px rgba(120,80,255,0.4);
+  }
+  .step-dot.done {
+    background: rgba(0,200,150,0.4);
+    border-color: rgba(100,230,180,0.6);
+    color: #fff;
+  }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+
+  .score-table th {
+    padding: 10px 14px; text-align: left;
+    font-weight: 600; font-size: 13px;
+    color: rgba(200,200,240,0.7);
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+  }
+  .score-table td {
+    padding: 10px 14px; font-size: 14px;
+    color: #d0d0f0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .score-table tr:hover td { background: rgba(255,255,255,0.04); }
+
+  .badge {
+    display: inline-block; padding: 2px 10px;
+    border-radius: 20px; font-size: 12px; font-weight: 600;
+  }
+  .badge-up { background: rgba(0,220,130,0.2); color: #5fffc0; }
+  .badge-down { background: rgba(255,80,100,0.2); color: #ff8090; }
+  .badge-flat { background: rgba(255,255,255,0.1); color: #aaa; }
+
+  /* Chart canvas dark theme overrides */
+  #trendCanvas {
+    max-height: 320px;
+  }
+</style>
+</head>
+<body class="relative z-10 text-gray-200">
+
+<!-- Header -->
+<header class="text-center pt-8 pb-4 z-10 relative">
+  <h1 class="text-3xl font-bold tracking-wide text-transparent bg-clip-text bg-gradient-to-r from-purple-300 via-blue-200 to-cyan-300">
+    CloudMarking 云阅卷
+  </h1>
+  <p class="text-sm text-gray-400 mt-1">学生成绩查询系统</p>
+</header>
+
+<!-- Bing Daily Image credit bar -->
+<section class="max-w-3xl mx-auto px-4 mb-4 z-10 relative" id="bingCredit">
+  <a href="bing" target="_blank" class="flex items-center gap-2 text-xs text-gray-500 hover:text-gray-300 transition-colors">
+    <span id="bingCopyright" class="truncate"></span>
+    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+  </a>
+</section>
+
+<!-- Main Container -->
+<main class="max-w-3xl mx-auto px-4 pb-12 z-10 relative" id="app">
+
+  <!-- ============================================================ -->
+  <!-- Step Indicator                                                 -->
+  <!-- ============================================================ -->
+  <div class="flex justify-center gap-2 sm:gap-3 mb-6" id="steps">
+    <div class="flex items-center gap-1 sm:gap-2">
+      <div class="step-dot active" id="dot1">1</div>
+      <span class="text-xs text-gray-400 hidden sm:inline">选校</span>
+    </div>
+    <div class="w-6 sm:w-10 h-0.5 mt-4 bg-white/10 rounded"><div class="h-full bg-white/20 rounded transition-all duration-500" id="line1" style="width:0%"></div></div>
+    <div class="flex items-center gap-1 sm:gap-2">
+      <div class="step-dot" id="dot2">2</div>
+      <span class="text-xs text-gray-400 hidden sm:inline">登录</span>
+    </div>
+    <div class="w-6 sm:w-10 h-0.5 mt-4 bg-white/10 rounded"><div class="h-full bg-white/20 rounded transition-all duration-500" id="line2" style="width:0%"></div></div>
+    <div class="flex items-center gap-1 sm:gap-2">
+      <div class="step-dot" id="dot3">3</div>
+      <span class="text-xs text-gray-400 hidden sm:inline">验证码</span>
+    </div>
+    <div class="w-6 sm:w-10 h-0.5 mt-4 bg-white/10 rounded"><div class="h-full bg-white/20 rounded transition-all duration-500" id="line3" style="width:0%"></div></div>
+    <div class="flex items-center gap-1 sm:gap-2">
+      <div class="step-dot" id="dot4">4</div>
+      <span class="text-xs text-gray-400 hidden sm:inline">成绩</span>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Step 1: Select Organization                                    -->
+  <!-- ============================================================ -->
+  <section id="step1" class="glass p-6 sm:p-8 fade-up">
+    <h2 class="text-xl font-semibold mb-4 text-purple-200">选择学校/组织</h2>
+    <div id="orgList" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+      <div class="col-span-full text-center py-8 text-gray-400">
+        <div class="animate-spin w-8 h-8 border-2 border-purple-400 border-t-transparent rounded-full mx-auto mb-3"></div>
+        加载组织列表...
+      </div>
+    </div>
+    <p class="text-xs text-gray-500" id="orgError"></p>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Step 2: Credentials                                           -->
+  <!-- ============================================================ -->
+  <section id="step2" class="glass p-6 sm:p-8 fade-up hidden">
+    <h2 class="text-xl font-semibold mb-1 text-purple-200">登录信息</h2>
+    <p class="text-sm text-gray-400 mb-4" id="selectedOrg"></p>
+    <div class="space-y-4">
+      <div>
+        <label class="block text-sm text-gray-300 mb-1">学籍号 / 考生号</label>
+        <input id="username" type="text" class="glass-input" placeholder="输入学籍号" autocomplete="off">
+      </div>
+      <div>
+        <label class="block text-sm text-gray-300 mb-1">密码</label>
+        <input id="password" type="password" class="glass-input" placeholder="输入密码">
+      </div>
+      <div class="flex items-center gap-2">
+        <input id="rememberMe" type="checkbox" class="w-4 h-4 rounded accent-purple-500">
+        <label for="rememberMe" class="text-sm text-gray-400 cursor-pointer">记住密码（登录成功后自动保存）</label>
+      </div>
+      <div class="flex gap-3 pt-2">
+        <button onclick="goStep1()" class="glass-btn text-sm">上一步</button>
+        <button id="btnLogin" onclick="doCaptcha()" class="glass-btn text-sm flex-1">下一步：获取验证码</button>
+      </div>
+    </div>
+    <p class="text-xs text-red-400 mt-3 hidden" id="loginError"></p>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Step 3: Captcha                                               -->
+  <!-- ============================================================ -->
+  <section id="step3" class="glass p-6 sm:p-8 fade-up hidden">
+    <h2 class="text-xl font-semibold mb-4 text-purple-200">验证码</h2>
+    <div class="flex flex-col sm:flex-row gap-4 items-start">
+      <div class="glass-card p-2 shrink-0 cursor-pointer" onclick="doCaptcha()" title="点击刷新">
+        <img id="captchaImg" src="" alt="验证码" class="h-14 rounded-lg">
+        <p class="text-xs text-gray-500 mt-1 text-center">点击图片刷新</p>
+      </div>
+      <div class="flex-1 w-full">
+        <label class="block text-sm text-gray-300 mb-1">输入验证码（4位）</label>
+        <input id="captchaInput" type="text" maxlength="4" class="glass-input text-center text-xl tracking-widest" placeholder="ABCD" autocomplete="off">
+        <p id="ocrHint" class="text-xs text-green-400 mt-2 hidden"></p>
+      </div>
+    </div>
+    <div class="flex gap-3 mt-4">
+      <button onclick="goStep2()" class="glass-btn text-sm">上一步</button>
+      <button id="btnCaptcha" onclick="doLogin()" class="glass-btn text-sm flex-1">登录</button>
+    </div>
+    <p class="text-xs text-red-400 mt-3 hidden" id="captchaError"></p>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Step 4: Results                                               -->
+  <!-- ============================================================ -->
+  <section id="step4" class="fade-up hidden">
+    <!-- Student info bar -->
+    <div class="glass-card p-4 mb-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm" id="studentInfo"></div>
+
+    <!-- Exam list -->
+    <div class="glass p-5 sm:p-7 mb-4">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-purple-200">考试记录</h2>
+        <div class="flex gap-3">
+          <button onclick="toggleTrendChart()" id="btnTrendToggle" class="text-xs text-cyan-300 hover:text-cyan-100 underline">查看趋势图</button>
+          <button onclick="goStep1()" class="text-xs text-gray-400 hover:text-gray-200 underline">退出登录</button>
+        </div>
+      </div>
+      <div id="examList" class="space-y-2"></div>
+    </div>
+
+    <!-- Trend Chart -->
+    <div id="trendChartSection" class="glass p-5 sm:p-7 mb-4 hidden fade-up">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-purple-200">成绩趋势</h2>
+        <div class="flex gap-2">
+          <button id="btnTotalTrend" onclick="switchTrendView('total')" class="glass-btn text-xs px-3 py-1.5">总分 & 排名</button>
+          <button id="btnSubjectTrend" onclick="switchTrendView('subject')" class="glass-btn text-xs px-3 py-1.5 opacity-60">各科成绩</button>
+        </div>
+      </div>
+      <div class="relative" style="height:320px">
+        <canvas id="trendCanvas"></canvas>
+      </div>
+      <p class="text-xs text-gray-500 mt-3 text-center" id="trendHint"></p>
+      <p class="text-xs text-red-400 mt-2 hidden" id="trendError"></p>
+    </div>
+
+    <!-- Score detail panel -->
+    <div id="scoreDetail" class="glass p-5 sm:p-7 hidden fade-up"></div>
+
+    <!-- Monitor Panel -->
+    <div id="monitorPanel" class="glass p-5 sm:p-7 mt-4 hidden">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-purple-200 flex items-center gap-2">
+          <span id="monitorDot" class="w-3 h-3 rounded-full bg-gray-500 inline-block"></span>
+          持久化监测
+        </h2>
+        <div class="flex gap-2">
+          <button id="btnMonitorToggle" onclick="toggleMonitor()" class="glass-btn text-sm">启动监测</button>
+          <button onclick="manualCheck()" id="btnManualCheck" class="glass-btn text-sm">立即检查</button>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">检查间隔</label>
+          <select id="monitorInterval" onchange="saveMonitorConfig()" class="glass-input text-sm">
+            <option value="1800">30 分钟</option>
+            <option value="3600" selected>1 小时</option>
+            <option value="7200">2 小时</option>
+            <option value="21600">6 小时</option>
+            <option value="43200">12 小时</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">上次检查</label>
+          <div id="lastCheck" class="text-sm text-gray-300">—</div>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">下次检查</label>
+          <div id="nextCheck" class="text-sm text-gray-300">—</div>
+        </div>
+      </div>
+      <p class="text-xs text-red-400 hidden mb-3" id="monitorError"></p>
+
+      <!-- Telegram config -->
+      <div class="border-t border-white/10 pt-3 mt-3">
+        <h3 class="text-sm text-gray-400 mb-2 cursor-pointer flex items-center gap-2" onclick="toggleTelegram()">
+          <svg id="tgChevron" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          Telegram 通知 (变化时自动推送)
+        </h3>
+        <div id="tgPanel" class="hidden space-y-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Bot Token</label>
+              <input id="tgToken" class="glass-input text-sm" placeholder="123456:ABC..." onchange="saveMonitorConfig()">
+            </div>
+            <div>
+              <label class="block text-xs text-gray-400 mb-1">Chat ID</label>
+              <input id="tgChatId" class="glass-input text-sm" placeholder="987654321" onchange="saveMonitorConfig()">
+            </div>
+          </div>
+          <button onclick="sendTelegram()" id="btnTelegram" class="glass-btn success text-sm">发送成绩通知</button>
+          <p class="text-xs text-green-400 hidden" id="tgOk"></p>
+          <p class="text-xs text-red-400 hidden" id="tgError"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- Toast                                                         -->
+  <!-- ============================================================ -->
+  <div id="toast" class="fixed top-6 left-1/2 -translate-x-1/2 px-5 py-3 rounded-xl text-sm font-medium shadow-2xl transition-all duration-300 opacity-0 pointer-events-none z-50 backdrop-blur-md" style="transform:translate(-50%,-12px)"></div>
+
+</main>
+
+<script>
+// ── State ────────────────────────────────────────────────
+const S = {
+  sid: null,
+  orgs: [],
+  orgId: null,
+  orgName: null,
+  exams: [],
+  currentExamIdx: -1,
+  config: null,
+  monitorPollTimer: null,
+  trendChart: null,
+};
+
+// 自动检测应用根路径（支持 Nginx 反代子目录部署）
+const APP_BASE = (() => {
+  const p = window.location.pathname;
+  const dir = p.replace(/\/[^/]*\.[^/]*$/, '') || '/';
+  return dir === '/' ? '' : dir;
+})();
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+// ── Toast ────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const el = $('#toast');
+  const colors = {
+    info: 'bg-white/10 border border-white/20 text-gray-100',
+    ok: 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-200',
+    err: 'bg-red-500/20 border border-red-500/40 text-red-200',
+  };
+  el.className = `fixed top-6 left-1/2 -translate-x-1/2 px-5 py-3 rounded-xl text-sm font-medium shadow-2xl transition-all duration-300 z-50 backdrop-blur-md ${colors[type]}`;
+  el.textContent = msg;
+  el.style.opacity = '1';
+  el.style.transform = 'translate(-50%,0)';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translate(-50%,-12px)'; }, 2800);
+}
+
+// ── Loading helpers ──────────────────────────────────────
+function btnLoading(el, text = '处理中...') {
+  el._orig = el.textContent;
+  el.disabled = true;
+  el.textContent = text;
+}
+function btnRestore(el) {
+  el.disabled = false;
+  el.textContent = el._orig || el.textContent;
+}
+
+// ── Step navigation ──────────────────────────────────────
+function setStep(n) {
+  for (let i = 1; i <= 4; i++) {
+    const sec = $(`#step${i}`);
+    const dot = $(`#dot${i}`);
+    if (sec) sec.classList.add('hidden');
+    if (dot) { dot.classList.remove('active', 'done'); }
+  }
+  const sec = $(`#step${n}`);
+  if (sec) { sec.classList.remove('hidden'); sec.classList.add('fade-up'); }
+  for (let i = 1; i <= n; i++) {
+    const dot = $(`#dot${i}`);
+    if (dot) dot.classList.add(i < n ? 'done' : 'active');
+    if (i < 4) {
+      const line = $(`#line${i}`);
+      if (line) line.style.width = i < n ? '100%' : '0%';
+    }
+  }
+}
+function goStep1() { S.sid = null; S.exams = []; setStep(1); }
+function goStep2() { setStep(2); }
+// step3 = captcha view
+
+// ── API helpers ──────────────────────────────────────────
+async function api(url, opts = {}) {
+  const res = await fetch(APP_BASE + url, {
+    headers: opts.json !== false ? { 'Accept': 'application/json' } : {},
+    ...opts,
+  });
+  if (opts.raw) return res;
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || `请求失败 (${res.status})`);
+  return data;
+}
+
+// ── Monitor helpers ───────────────────────────────────────
+async function loadConfig() {
+  try {
+    S.config = await api('/api/config');
+    if (S.config.org_id) {
+      S.orgId = S.config.org_id;
+    }
+    if (S.config.username) $('#username').value = S.config.username;
+    // 脱敏值不填入输入框，避免误用
+    if (S.config.password && !S.config.password.includes('***')) {
+      $('#password').value = S.config.password;
+    } else if (S.config.password) {
+      $('#password').placeholder = '密码已保存，如需重新登录请输入';
+    }
+    if (S.config.tg_token) {
+      // tg_token 脱敏后仍可显示，方便用户识别
+      $('#tgToken').value = S.config.tg_token;
+    }
+    if (S.config.tg_chat_id) $('#tgChatId').value = S.config.tg_chat_id;
+    return S.config;
+  } catch (e) {
+    S.config = {};
+    return {};
+  }
+}
+
+async function loadMonitorStatus() {
+  try {
+    const st = await api('/api/monitor/status');
+    updateMonitorUI(st);
+    return st;
+  } catch (e) {
+    return { running: false };
+  }
+}
+
+function updateMonitorUI(st) {
+  const panel = $('#monitorPanel');
+  const dot = $('#monitorDot');
+  const toggle = $('#btnMonitorToggle');
+  const err = $('#monitorError');
+
+  if (panel) panel.classList.remove('hidden');
+
+  // 状态指示灯
+  if (st.running) {
+    dot.className = 'w-3 h-3 rounded-full bg-emerald-400 pulse-glow inline-block';
+    toggle.textContent = '停止监测';
+    toggle.classList.add('danger');
+  } else {
+    dot.className = 'w-3 h-3 rounded-full bg-gray-500 inline-block';
+    toggle.textContent = '启动监测';
+    toggle.classList.remove('danger');
+  }
+
+  // 间隔
+  const sel = $('#monitorInterval');
+  if (sel && st.monitor_interval) sel.value = String(st.monitor_interval);
+
+  // 时间
+  if (st.last_check) {
+    const t = new Date(st.last_check);
+    $('#lastCheck').textContent = t.toLocaleString('zh-CN');
+    if (st.next_check) {
+      const n = new Date(st.next_check);
+      $('#nextCheck').textContent = n.toLocaleString('zh-CN');
+    } else {
+      $('#nextCheck').textContent = '—';
+    }
+  } else {
+    $('#lastCheck').textContent = '—';
+    $('#nextCheck').textContent = '—';
+  }
+
+  // 错误
+  if (st.last_error) {
+    err.textContent = st.last_error;
+    err.classList.remove('hidden');
+  } else {
+    err.classList.add('hidden');
+  }
+
+  // 缓存成绩: 有且未登录时直接展示
+  if (st.has_scores && st.last_scores && !S.exams.length && !S.sid) {
+    showCachedScores(st.last_scores);
+  }
+}
+
+function showCachedScores(scores) {
+  const s = scores.student;
+  $('#studentInfo').innerHTML = `
+    <span class="text-gray-300"><span class="text-gray-500">姓名</span> ${s.name}</span>
+    <span class="text-gray-300"><span class="text-gray-500">学号</span> ${s.id}</span>
+    <span class="text-gray-300"><span class="text-gray-500">学校</span> ${scores.school}</span>
+    <span class="text-gray-300"><span class="text-gray-500">年级</span> ${s.grade}</span>
+    <span class="text-gray-300"><span class="text-gray-500">班级</span> ${s.class}班</span>
+    <span class="text-xs text-yellow-400 ml-auto">缓存数据</span>
+  `;
+
+  // 检查是否为监测产出的完整缓存 (含 total_score + subjects 详情)
+  const hasFullScores = scores.exams.length > 0 && scores.exams[0].total_score !== undefined;
+
+  S.exams = scores.exams.map((e, i) => ({
+    ksdm: '', kldm: '',
+    name: e.exam_name,
+    date: e.exam_date || '',
+    class_rank: e.class_rank || '',
+    grade_rank: e.grade_rank || '',
+    subjects: (e.subjects || []).map(s => s.name).join(' '),
+    _cached: hasFullScores,
+    _cachedData: hasFullScores ? e : null,
+  }));
+
+  renderExamList();
+  $('#scoreDetail').classList.add('hidden');
+  setStep(4);
+  $('#monitorPanel').classList.remove('hidden');
+}
+
+async function toggleMonitor() {
+  const st = await loadMonitorStatus();
+  const btn = $('#btnMonitorToggle');
+  btnLoading(btn, '处理中...');
+  try {
+    if (st.running) {
+      await api('/api/monitor/stop', { method: 'POST' });
+      toast('监测已停止', 'info');
+    } else {
+      // 确认凭据已保存
+      await saveCredentials();
+      await api('/api/monitor/start', { method: 'POST' });
+      toast('监测已启动', 'ok');
+    }
+    await loadMonitorStatus();
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    btnRestore(btn);
+  }
+}
+
+async function manualCheck() {
+  const btn = $('#btnManualCheck');
+  btnLoading(btn, '检查中...');
+  try {
+    await saveCredentials();
+    const result = await api('/api/monitor/check', { method: 'POST' });
+    toast(result.changed ? '检测到成绩变化!' : '检查完成，成绩无变化', result.changed ? 'ok' : 'info');
+    await loadMonitorStatus();
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    btnRestore(btn);
+  }
+}
+
+async function saveCredentials() {
+  const pwd = $('#password').value.trim();
+  const tok = $('#tgToken').value.trim();
+  const form = new FormData();
+  form.append('org_id', S.orgId || '');
+  form.append('username', $('#username').value.trim());
+  // 脱敏值不发送，避免覆盖真实密码
+  if (pwd && !pwd.includes('***')) form.append('password', pwd);
+  if (tok && !tok.includes('***')) form.append('tg_token', tok);
+  form.append('tg_chat_id', $('#tgChatId').value.trim());
+  form.append('monitor_interval', parseInt($('#monitorInterval').value) || 3600);
+  await api('/api/config', { method: 'POST', body: form });
+}
+
+async function cacheScores(edata) {
+  // 缓存考试列表到 config.json (使用专用端点，不影响监测等设置)
+  const scores = {
+    student: edata.student,
+    school: edata.school,
+    exams: S.exams.map(e => ({
+      exam_name: e.name,
+      exam_date: e.date,
+      class_rank: e.class_rank,
+      grade_rank: e.grade_rank,
+      subjects: [],
+    })),
+  };
+  const form = new FormData();
+  form.append('last_scores', JSON.stringify(scores));
+  await api('/api/config/scores', { method: 'POST', body: form });
+}
+
+async function saveMonitorConfig() {
+  try {
+    await saveCredentials();
+    toast('配置已保存', 'ok');
+  } catch (e) {
+    // silent
+  }
+}
+
+// ── Initialize: load orgs ────────────────────────────────
+async function loadOrgs() {
+  const container = $('#orgList');
+  try {
+    const data = await api('/api/organizations');
+    S.orgs = data.orgs;
+    if (!data.orgs.length) {
+      container.innerHTML = `<div class="col-span-full text-center py-8 text-gray-400">暂无可用组织</div>`;
+      return;
+    }
+    container.innerHTML = data.orgs.map(o =>
+      `<div class="glass-card p-3 sm:p-4 cursor-pointer text-center" onclick="selectOrg('${o.id}','${o.name.replace(/'/g,"\\'")}')">
+        <div class="font-medium text-sm sm:text-base text-gray-100">${o.name}</div>
+        <div class="text-xs text-gray-500 mt-1">${o.id}</div>
+      </div>`
+    ).join('');
+    // 预填已保存的组织
+    if (S.config && S.config.org_id) {
+      S.orgId = S.config.org_id;
+      const matched = S.orgs.find(o => o.id === S.config.org_id);
+      S.orgName = matched ? matched.name : S.config.org_id;
+    }
+  } catch (e) {
+    container.innerHTML = `<div class="col-span-full text-center py-6 text-red-400">${e.message}</div>`;
+  }
+}
+
+function selectOrg(id, name) {
+  S.orgId = id;
+  S.orgName = name;
+  $('#selectedOrg').textContent = `已选择: ${name} (${id})`;
+  setStep(2);
+  $('#loginError').classList.add('hidden');
+}
+
+// ── Fetch captcha ────────────────────────────────────────
+async function doCaptcha() {
+  const uname = $('#username').value.trim();
+  const pwd = $('#password').value.trim();
+  if (!uname || !pwd) {
+    $('#loginError').textContent = '请输入学籍号和密码';
+    $('#loginError').classList.remove('hidden');
+    return;
+  }
+  $('#loginError').classList.add('hidden');
+  const btn = $('#btnLogin');
+  btnLoading(btn, '获取中...');
+
+  try {
+    // Create session if needed
+    if (!S.sid) {
+      const sdata = await api('/api/session', { method: 'POST' });
+      S.sid = sdata.session_id;
+    }
+    // Fetch captcha
+    const form = new FormData();
+    form.append('session_id', S.sid);
+    const data = await api('/api/captcha', { method: 'POST', body: form });
+    $('#captchaImg').src = data.captcha_image;
+    if (data.captcha_text) {
+      $('#captchaInput').value = data.captcha_text;
+      $('#ocrHint').textContent = `OCR 自动识别: ${data.captcha_text}（可手动修改）`;
+      $('#ocrHint').classList.remove('hidden');
+    } else {
+      $('#captchaInput').value = '';
+      $('#ocrHint').classList.add('hidden');
+    }
+    $('#captchaError').classList.add('hidden');
+    setStep(3);
+  } catch (e) {
+    S.sid = null; // invalidate
+    $('#loginError').textContent = e.message;
+    $('#loginError').classList.remove('hidden');
+  } finally {
+    btnRestore(btn);
+  }
+}
+
+// ── Login ────────────────────────────────────────────────
+async function doLogin() {
+  const captcha = $('#captchaInput').value.trim();
+  if (captcha.length !== 4) {
+    $('#captchaError').textContent = '验证码必须为4位';
+    $('#captchaError').classList.remove('hidden');
+    return;
+  }
+  $('#captchaError').classList.add('hidden');
+  const btn = $('#btnCaptcha');
+  btnLoading(btn, '登录中...');
+
+  try {
+    const form = new FormData();
+    form.append('session_id', S.sid);
+    form.append('org_id', S.orgId);
+    form.append('username', $('#username').value.trim());
+    form.append('password', $('#password').value.trim());
+    form.append('captcha', captcha);
+    await api('/api/login', { method: 'POST', body: form });
+
+    // Fetch exams
+    const edata = await api(`/api/exams?session_id=${S.sid}`);
+    S.exams = edata.exams;
+
+    // Render student info
+    const s = edata.student;
+    $('#studentInfo').innerHTML = `
+      <span class="text-gray-300"><span class="text-gray-500">姓名</span> ${s.name}</span>
+      <span class="text-gray-300"><span class="text-gray-500">学号</span> ${s.id}</span>
+      <span class="text-gray-300"><span class="text-gray-500">学校</span> ${edata.school}</span>
+      <span class="text-gray-300"><span class="text-gray-500">年级</span> ${s.grade}</span>
+      <span class="text-gray-300"><span class="text-gray-500">班级</span> ${s.class}班</span>
+    `;
+
+    // Render exam list
+    renderExamList();
+    $('#scoreDetail').classList.add('hidden');
+    setStep(4);
+    toast('登录成功', 'ok');
+
+    // 记住密码 → 保存凭据 (下次刷新自动填入学籍号密码)
+    if ($('#rememberMe').checked) {
+      await saveCredentials();
+      toast('凭据已保存', 'ok');
+    }
+
+    // 显示监测面板
+    $('#monitorPanel').classList.remove('hidden');
+    await loadMonitorStatus();
+  } catch (e) {
+    if (e.message.includes('验证码')) {
+      S.sid = null; $('#captchaError').textContent = e.message; $('#captchaError').classList.remove('hidden');
+    } else {
+      $('#captchaError').textContent = e.message; $('#captchaError').classList.remove('hidden');
+    }
+  } finally {
+    btnRestore(btn);
+  }
+}
+
+// ── Render exam list ─────────────────────────────────────
+function renderExamList() {
+  const el = $('#examList');
+  if (!S.exams.length) {
+    el.innerHTML = '<p class="text-gray-500 text-sm py-4 text-center">暂无考试记录</p>';
+    return;
+  }
+  el.innerHTML = S.exams.map((e, i) =>
+    `<div class="glass-card p-4 cursor-pointer flex items-center justify-between" onclick="loadScore(${i})">
+      <div>
+        <div class="font-medium text-gray-100 text-sm sm:text-base">${e.name}</div>
+        <div class="text-xs text-gray-500 mt-1">${e.date || '未知日期'} · ${e.subjects}</div>
+      </div>
+      <div class="text-right shrink-0 ml-3">
+        <div class="text-sm text-gray-300">班 ${e.class_rank || '-'} · 级 ${e.grade_rank || '-'}</div>
+      </div>
+    </div>`
+  ).join('');
+}
+
+// ── Load score detail ────────────────────────────────────
+async function loadScore(idx) {
+  S.currentExamIdx = idx;
+  const panel = $('#scoreDetail');
+  panel.classList.remove('hidden');
+  panel.classList.add('fade-up');
+
+  // 仅当缓存包含完整分数数据时才跳过 API 调用
+  const exam = S.exams[idx];
+  if (exam && exam._cached && exam._cachedData && exam._cachedData.total_score !== undefined) {
+    renderScoreDetail(panel, {
+      exam_name: exam._cachedData.exam_name,
+      summary: {
+        total_score: exam._cachedData.total_score,
+        class_rank: exam._cachedData.class_rank,
+        grade_rank: exam._cachedData.grade_rank,
+        total_students: exam._cachedData.total_students,
+        class_max: '', class_avg: '', class_min: '',
+      },
+      subjects: exam._cachedData.subjects || [],
+      strengths: '', weaknesses: '',
+      changes: [],
+      classmates: [],
+    });
+    panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+
+  if (!S.sid) {
+    panel.innerHTML = `<div class="text-yellow-400 text-center py-6">请先登录以查看详细成绩</div>`;
+    return;
+  }
+
+  panel.innerHTML = `<div class="text-center py-6 text-gray-400"><div class="animate-spin w-6 h-6 border-2 border-purple-400 border-t-transparent rounded-full mx-auto mb-2"></div>加载中...</div>`;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  try {
+    const data = await api(`/api/scores/${idx}?session_id=${S.sid}`);
+    renderScoreDetail(panel, data);
+  } catch (e) {
+    panel.innerHTML = `<div class="text-red-400 text-center py-6">${e.message}</div>`;
+  }
+}
+
+function renderScoreDetail(panel, data) {
+  const sum = data.summary;
+  const subs = data.subjects || [];
+  const changes = data.changes || [];
+  const classmates = data.classmates || [];
+
+  let html = '';
+  html += `<h3 class="text-lg font-semibold text-purple-200 mb-3">${data.exam_name}</h3>`;
+  html += `<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">`;
+  html += statCard('总分', sum.total_score, 'text-white text-lg');
+  html += statCard('班排', `${sum.class_rank} / ${sum.total_students}`, 'text-blue-200');
+  html += statCard('级排', sum.grade_rank, 'text-cyan-200');
+  if (sum.class_avg) html += statCard('班均分', sum.class_avg, 'text-gray-300');
+  if (sum.class_max) html += statCard('班最高', sum.class_max, 'text-emerald-200');
+  if (sum.class_min) html += statCard('班最低', sum.class_min, 'text-red-200');
+  html += `</div>`;
+
+  if (subs.length) {
+    html += `<div class="overflow-x-auto"><table class="score-table w-full"><thead><tr>
+      <th>科目</th><th>分数</th><th>班排</th><th>级排</th><th>班均分</th><th>级均分</th>
+    </tr></thead><tbody>`;
+    for (const km of subs) {
+      html += `<tr>
+        <td class="font-medium">${km.name}</td>
+        <td>${km.score || '-'}</td><td>${km.class_rank || '-'}</td><td>${km.grade_rank || '-'}</td>
+        <td>${km.class_avg || '-'}</td><td>${km.grade_avg || '-'}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>`;
+  }
+
+  if (data.strengths || data.weaknesses) {
+    html += `<div class="flex flex-wrap gap-2 mt-4 text-sm">`;
+    if (data.strengths) html += `<span class="text-emerald-300">优势: ${data.strengths}</span>`;
+    if (data.weaknesses) html += `<span class="text-red-300 ml-2">弱势: ${data.weaknesses}</span>`;
+    html += `</div>`;
+  }
+
+  if (changes.length) {
+    html += `<div class="flex flex-wrap gap-2 mt-3">`;
+    for (const ch of changes) {
+      const cls = ch.direction === 'up' ? 'badge-up' : (ch.direction === 'down' ? 'badge-down' : 'badge-flat');
+      const sign = ch.direction === 'up' ? '+' : (ch.direction === 'down' ? '' : '');
+      html += `<span class="badge ${cls}">${ch.subject} ${sign}${(ch.diff * 100).toFixed(1)}%</span>`;
+    }
+    html += `</div>`;
+  }
+
+  if (classmates.length) {
+    html += `<div class="mt-4"><p class="text-xs text-gray-500 mb-2">班级排名速览 (前${Math.min(classmates.length,10)})</p>`;
+    html += `<div class="flex flex-wrap gap-x-4 gap-y-1 text-sm">`;
+    for (const c of classmates) {
+      html += `<span class="text-gray-300">${c.name}<span class="text-gray-500 ml-1">${c.total}</span></span>`;
+    }
+    html += `</div></div>`;
+  }
+
+  panel.innerHTML = html;
+}
+
+// ── Trend Chart ────────────────────────────────────────────
+const TREND_COLORS = {
+  total:   { border: 'rgba(120,180,255,0.9)', bg: 'rgba(120,180,255,0.15)' },
+  rank:    { border: 'rgba(255,180,100,0.9)', bg: 'rgba(255,180,100,0.10)' },
+  gradeRank:{ border: 'rgba(255,130,160,0.9)', bg: 'rgba(255,130,160,0.10)' },
+  subjects: [
+    'rgba(0,230,180,0.85)',
+    'rgba(255,200,80,0.85)',
+    'rgba(200,140,255,0.85)',
+    'rgba(80,200,255,0.85)',
+    'rgba(255,120,120,0.85)',
+    'rgba(140,255,140,0.85)',
+    'rgba(255,160,220,0.85)',
+    'rgba(180,200,100,0.85)',
+    'rgba(140,180,255,0.85)',
+  ],
+};
+
+S._trendView = 'total';
+S._trendData = null;
+
+async function toggleTrendChart() {
+  const section = $('#trendChartSection');
+  const btn = $('#btnTrendToggle');
+  if (section.classList.contains('hidden')) {
+    section.classList.remove('hidden');
+    section.classList.add('fade-up');
+    btn.textContent = '收起趋势图';
+    await loadTrendData();
+  } else {
+    section.classList.add('hidden');
+    btn.textContent = '查看趋势图';
+    if (S.trendChart) {
+      S.trendChart.destroy();
+      S.trendChart = null;
+    }
+  }
+}
+
+async function loadTrendData() {
+  // Prefer cached full data when available
+  if (S.exams.length > 0 && S.exams[0]._cachedData && S.exams[0]._cachedData.total_score !== undefined) {
+    S._trendData = S.exams.map(e => ({
+      exam_name: e.name,
+      exam_date: e.date || '',
+      total_score: e._cachedData ? parseFloat(e._cachedData.total_score) || 0 : 0,
+      class_rank: e._cachedData ? parseInt(e._cachedData.class_rank) || 0 : 0,
+      grade_rank: e._cachedData ? parseInt(e._cachedData.grade_rank) || 0 : 0,
+      total_students: e._cachedData ? parseInt(e._cachedData.total_students) || 0 : 0,
+      subjects: (e._cachedData && e._cachedData.subjects) ? e._cachedData.subjects : [],
+    }));
+    renderTrendChart();
+    return;
+  }
+
+  // Fetch from API if logged in
+  if (!S.sid) {
+    $('#trendError').textContent = '请先登录以获取趋势数据';
+    $('#trendError').classList.remove('hidden');
+    return;
+  }
+  $('#trendError').classList.add('hidden');
+
+  try {
+    const data = await api(`/api/scores/all?session_id=${S.sid}`);
+    S._trendData = data.exams.map(e => ({
+      exam_name: e.exam_name,
+      exam_date: e.exam_date || '',
+      total_score: parseFloat(e.total_score) || 0,
+      class_rank: parseInt(e.class_rank) || 0,
+      grade_rank: parseInt(e.grade_rank) || 0,
+      total_students: parseInt(e.total_students) || 0,
+      subjects: (e.subjects || []).map(s => ({
+        name: s.name,
+        score: parseFloat(s.score) || 0,
+      })),
+    }));
+    renderTrendChart();
+  } catch (e) {
+    $('#trendError').textContent = e.message;
+    $('#trendError').classList.remove('hidden');
+  }
+}
+
+function switchTrendView(view) {
+  S._trendView = view;
+  const totalBtn = $('#btnTotalTrend');
+  const subjBtn = $('#btnSubjectTrend');
+  if (view === 'total') {
+    totalBtn.style.opacity = '1';
+    subjBtn.style.opacity = '0.6';
+  } else {
+    totalBtn.style.opacity = '0.6';
+    subjBtn.style.opacity = '1';
+  }
+  renderTrendChart();
+}
+
+function renderTrendChart() {
+  if (!S._trendData || !S._trendData.length) return;
+
+  const canvas = $('#trendCanvas');
+  const ctx = canvas.getContext('2d');
+
+  if (S.trendChart) {
+    S.trendChart.destroy();
+    S.trendChart = null;
+  }
+
+  const labels = S._trendData.map(e => {
+    const short = e.exam_name.length > 12 ? e.exam_name.slice(0, 10) + '…' : e.exam_name;
+    return short;
+  });
+
+  Chart.defaults.color = 'rgba(200,200,240,0.8)';
+  Chart.defaults.borderColor = 'rgba(255,255,255,0.08)';
+  Chart.defaults.font.family = "'SF Pro Display','PingFang SC','Microsoft YaHei',sans-serif";
+  Chart.defaults.font.size = 12;
+
+  if (S._trendView === 'total') {
+    renderTotalTrend(ctx, labels);
+  } else {
+    renderSubjectTrend(ctx, labels);
+  }
+}
+
+function renderTotalTrend(ctx, labels) {
+  const scores = S._trendData.map(e => e.total_score);
+  const classRanks = S._trendData.map(e => e.class_rank || null);
+  const gradeRanks = S._trendData.map(e => e.grade_rank || null);
+
+  S.trendChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '总分',
+          data: scores,
+          borderColor: TREND_COLORS.total.border,
+          backgroundColor: TREND_COLORS.total.bg,
+          borderWidth: 2.5,
+          pointRadius: 5,
+          pointBackgroundColor: TREND_COLORS.total.border,
+          pointBorderColor: 'rgba(0,0,0,0.6)',
+          pointBorderWidth: 2,
+          tension: 0.3,
+          fill: true,
+          yAxisID: 'y',
+        },
+        {
+          label: '班排',
+          data: classRanks,
+          borderColor: TREND_COLORS.rank.border,
+          backgroundColor: TREND_COLORS.rank.bg,
+          borderWidth: 2,
+          borderDash: [6, 3],
+          pointRadius: 4,
+          pointBackgroundColor: TREND_COLORS.rank.border,
+          pointBorderColor: 'rgba(0,0,0,0.6)',
+          pointBorderWidth: 2,
+          tension: 0.3,
+          fill: false,
+          yAxisID: 'y1',
+        },
+        {
+          label: '级排',
+          data: gradeRanks,
+          borderColor: TREND_COLORS.gradeRank.border,
+          backgroundColor: TREND_COLORS.gradeRank.bg,
+          borderWidth: 2,
+          borderDash: [3, 3],
+          pointRadius: 4,
+          pointBackgroundColor: TREND_COLORS.gradeRank.border,
+          pointBorderColor: 'rgba(0,0,0,0.6)',
+          pointBorderWidth: 2,
+          tension: 0.3,
+          fill: false,
+          yAxisID: 'y1',
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          labels: { usePointStyle: true, padding: 20, color: 'rgba(200,200,240,0.8)' },
+        },
+        tooltip: {
+          backgroundColor: 'rgba(20,20,40,0.9)',
+          titleColor: 'rgba(200,200,240,1)',
+          bodyColor: 'rgba(220,220,255,0.9)',
+          borderColor: 'rgba(255,255,255,0.2)',
+          borderWidth: 1,
+          padding: 12,
+          callbacks: {
+            label(ctx) {
+              if (ctx.dataset.label === '总分') return `总分: ${ctx.raw}`;
+              return `${ctx.dataset.label}: ${ctx.raw ?? '—'}`;
+            },
+            afterBody(items) {
+              const idx = items[0]?.dataIndex;
+              if (idx === undefined || !S._trendData[idx]) return '';
+              const e = S._trendData[idx];
+              if (e.total_students) return `班级人数: ${e.total_students}`;
+              return '';
+            },
+          },
+        },
+      },
+      scales: {
+        y: {
+          type: 'linear',
+          position: 'left',
+          title: { display: true, text: '总分', color: 'rgba(180,200,240,0.7)' },
+          grid: { color: 'rgba(255,255,255,0.06)' },
+          ticks: { color: 'rgba(180,200,240,0.7)' },
+          min: Math.max(0, Math.min(...scores) - 30),
+        },
+        y1: {
+          type: 'linear',
+          position: 'right',
+          reverse: true,
+          title: { display: true, text: '排名', color: 'rgba(240,200,180,0.7)' },
+          grid: { drawOnChartArea: false },
+          ticks: { color: 'rgba(240,200,180,0.7)' },
+        },
+        x: {
+          grid: { color: 'rgba(255,255,255,0.06)' },
+          ticks: { color: 'rgba(200,200,240,0.7)', maxRotation: 30 },
+        },
+      },
+    },
+  });
+
+  $('#trendHint').textContent = '蓝色实线为总分变化，虚线为排名（排名轴反转：越靠上排名越好）';
+}
+
+function renderSubjectTrend(ctx, labels) {
+  const examCount = S._trendData.length;
+
+  // Build subject → index-aware score arrays (null for exams missing that subject)
+  const subjectMap = {};
+  S._trendData.forEach((exam, idx) => {
+    for (const subj of (exam.subjects || [])) {
+      if (!subjectMap[subj.name]) subjectMap[subj.name] = new Array(examCount).fill(null);
+      subjectMap[subj.name][idx] = parseFloat(subj.score) || null;
+    }
+  });
+
+  const datasets = [];
+  let colorIdx = 0;
+  for (const [name, data] of Object.entries(subjectMap)) {
+    datasets.push({
+      label: name,
+      data,
+      borderColor: TREND_COLORS.subjects[colorIdx % TREND_COLORS.subjects.length],
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      pointRadius: 4,
+      pointBackgroundColor: TREND_COLORS.subjects[colorIdx % TREND_COLORS.subjects.length],
+      pointBorderColor: 'rgba(0,0,0,0.6)',
+      pointBorderWidth: 1.5,
+      tension: 0.3,
+      spanGaps: false,
+    });
+    colorIdx++;
+  }
+
+  S.trendChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          labels: { usePointStyle: true, padding: 16, color: 'rgba(200,200,240,0.8)' },
+        },
+        tooltip: {
+          backgroundColor: 'rgba(20,20,40,0.9)',
+          titleColor: 'rgba(200,200,240,1)',
+          bodyColor: 'rgba(220,220,255,0.9)',
+          borderColor: 'rgba(255,255,255,0.2)',
+          borderWidth: 1,
+          padding: 12,
+        },
+      },
+      scales: {
+        y: {
+          title: { display: true, text: '分数', color: 'rgba(180,200,240,0.7)' },
+          grid: { color: 'rgba(255,255,255,0.06)' },
+          ticks: { color: 'rgba(180,200,240,0.7)' },
+        },
+        x: {
+          grid: { color: 'rgba(255,255,255,0.06)' },
+          ticks: { color: 'rgba(200,200,240,0.7)', maxRotation: 30 },
+        },
+      },
+    },
+  });
+
+  $('#trendHint').textContent = '只显示该考试包含的科目，缺失的科目不连线';
+}
+
+// ── Telegram ───────────────────────────────────────────────
+
+function statCard(label, value, extraClass = '') {
+  return `<div class="glass-card p-3 text-center">
+    <div class="text-xs text-gray-500 mb-1">${label}</div>
+    <div class="font-semibold ${extraClass}">${value || '-'}</div>
+  </div>`;
+}
+
+// ── Telegram ─────────────────────────────────────────────
+function toggleTelegram() {
+  const panel = $('#tgPanel');
+  const chevron = $('#tgChevron');
+  panel.classList.toggle('hidden');
+  chevron.classList.toggle('rotate-90');
+}
+
+async function sendTelegram() {
+  const token = $('#tgToken').value.trim();
+  const chatId = $('#tgChatId').value.trim();
+  if (!token || !chatId) {
+    $('#tgError').textContent = '请填写 Bot Token 和 Chat ID';
+    $('#tgError').classList.remove('hidden');
+    return;
+  }
+  if (S.currentExamIdx < 0) {
+    $('#tgError').textContent = '请先选择一次考试';
+    $('#tgError').classList.remove('hidden');
+    return;
+  }
+  $('#tgError').classList.add('hidden');
+  $('#tgOk').classList.add('hidden');
+  const btn = $('#btnTelegram');
+  btnLoading(btn, '发送中...');
+
+  try {
+    // 优先尝试实时成绩（有会话时），失败则降级到缓存
+    if (S.sid) {
+      try {
+        const form = new FormData();
+        form.append('session_id', S.sid);
+        form.append('exam_index', S.currentExamIdx);
+        form.append('tg_token', token);
+        form.append('tg_chat_id', chatId);
+        await api('/api/telegram', { method: 'POST', body: form });
+        $('#tgOk').textContent = '通知发送成功!';
+        $('#tgOk').classList.remove('hidden');
+        toast('Telegram 通知已发送', 'ok');
+        return;
+      } catch (e) {
+        // 会话过期或获取失败 → 降级到缓存
+        if (!e.message.includes('会话') && !e.message.includes('登录')) throw e;
+      }
+    }
+    // 无会话或会话已过期 → 用缓存成绩 + 后端自动解析真实 token
+    const exam = S.exams[S.currentExamIdx];
+    if (!exam || !exam._cachedData) {
+      throw new Error('无缓存成绩，请先登录获取实时数据');
+    }
+    const msg = buildTgMessage(exam);
+    const form = new FormData();
+    form.append('text', msg);
+    form.append('tg_token', token);   // 脱敏 token 由后端解析
+    form.append('tg_chat_id', chatId);
+    await api('/api/telegram/send', { method: 'POST', body: form });
+    $('#tgOk').textContent = '通知发送成功!';
+    $('#tgOk').classList.remove('hidden');
+    toast('Telegram 通知已发送', 'ok');
+  } catch (e) {
+    $('#tgError').textContent = e.message;
+    $('#tgError').classList.remove('hidden');
+  } finally {
+    btnRestore(btn);
+  }
+}
+
+function buildTgMessage(exam) {
+  const d = exam._cachedData;
+  const lines = [];
+  lines.push(`<b>${d.exam_name || exam.name}</b>`);
+  lines.push(`总分: ${d.total_score || '?'}  班排: ${d.class_rank || '?'}/${d.total_students || '?'}  级排: ${d.grade_rank || '?'}`);
+  if (d.subjects && d.subjects.length) {
+    const subs = d.subjects.map(k =>
+      `${k.name}:${k.score || '-'}(B${k.class_rank || '-'}/G${k.grade_rank || '-'})`
+    );
+    lines.push(subs.join(' | '));
+  }
+  return lines.join('\n');
+}
+
+// ── Init ─────────────────────────────────────────────────
+(async function init() {
+  await loadConfig();       // 加载已保存的配置
+  await loadOrgs();         // 加载学校列表
+  await loadMonitorStatus();// 加载监测状态 (可能展示缓存成绩)
+  loadBingDaily();          // 加载 Bing 每日一图
+
+  // 每 30 秒刷新监测状态
+  S.monitorPollTimer = setInterval(loadMonitorStatus, 30000);
+})();
+
+// ── Bing Daily Image ────────────────────────────────────
+async function loadBingDaily() {
+  try {
+    const data = await api('/api/bing/daily');
+    if (data.image_url) {
+      // Set full-page background wallpaper
+      document.documentElement.style.setProperty('--bing-wallpaper', `url(${data.image_url})`);
+    }
+    if (data.copyright) {
+      $('#bingCopyright').textContent = data.copyright;
+    }
+  } catch (e) {
+    // Keep default dark fallback background
+  }
+}
+</script>
+</body>
+</html>

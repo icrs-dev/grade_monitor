@@ -1,0 +1,12 @@
+services:
+  cloudmarking:
+    build: .
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json  # 持久化凭据 + 监测状态
+    environment:
+      # 子目录部署时设置，例如 Nginx proxy_pass /cloudmarking/ → /
+      - APP_ROOT_PATH=${APP_ROOT_PATH:-}
+    # 国内用户: docker compose build --build-arg USE_CN_MIRROR=true
