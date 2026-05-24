@@ -1,6 +1,6 @@
 # CloudMarking 云阅卷 — 技术文档
 
-> 版本: 2.0.0 &emsp; 后端: FastAPI &emsp; 前端: Vanilla JS + Tailwind CSS &emsp; 部署: Docker
+> 版本: 1.2.0 &emsp; 后端: FastAPI &emsp; 前端: React + TypeScript + Tailwind CSS &emsp; 部署: Docker
 
 ## 目录
 

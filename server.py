@@ -13,12 +13,13 @@ import threading
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+from collections import defaultdict
 
 # ── Timezone ─────────────────────────────────────────────
 CST = timezone(timedelta(hours=8))  # UTC+08:00 中国标准时间
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Form, Query
+from fastapi import FastAPI, HTTPException, Form, Query, Request, Cookie, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 import requests
@@ -35,6 +36,12 @@ UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
+SESSION_TTL = 1800  # 30 分钟无活动则过期
+
+# Rate limiting
+LOGIN_RATE_WINDOW = 300  # 5 分钟窗口
+MAX_LOGIN_ATTEMPTS_IP = 20
+MAX_LOGIN_ATTEMPTS_USERNAME = 5
 
 # ── OCR ──────────────────────────────────────────────────
 try:
@@ -63,6 +70,7 @@ CONFIG_DEFAULTS = {
     "last_scores": None,
     "last_error": "",
     "consecutive_failures": 0,
+    "api_key": "",
 }
 
 
@@ -85,24 +93,69 @@ def save_config(cfg):
         )
 
 
+def get_api_key():
+    """获取或自动生成管理 API 密钥"""
+    cfg = load_config()
+    key = cfg.get("api_key", "")
+    if not key:
+        key = uuid.uuid4().hex
+        cfg["api_key"] = key
+        save_config(cfg)
+        logger.info(f"已生成管理 API 密钥: {key[:8]}...")
+    return key
+
+
 # ── Session store ────────────────────────────────────────
-# { sid: { "http": requests.Session, "logged_in": bool, "exam_params": dict } }
+# { sid: { "http": requests.Session, "logged_in": bool, "exam_params": dict,
+#          "client_ip": str, "client_ua": str, "_at": float, ... } }
 sessions: dict = {}
+
+# ── Rate limiting store ──────────────────────────────────
+_login_attempts: dict = {
+    "ip": defaultdict(list),       # "ip": [(timestamp, username), ...]
+    "username": defaultdict(list),  # "username": [(timestamp, ip), ...]
+}
+_rate_lock = threading.Lock()
 
 # ── FastAPI app ──────────────────────────────────────────
 APP_ROOT = os.environ.get("APP_ROOT_PATH", "")
 app = FastAPI(
     title="CloudMarking 云阅卷",
-    version="2.0.0",
+    version="1.2.0",
     root_path=APP_ROOT,
-    # 反代后正确生成 URL (swagger docs / redirects)
     servers=[{"url": APP_ROOT}] if APP_ROOT else None,
 )
 
+
+# ═══════════════════════════════════════════════════════
+#  Security Headers Middleware
+# ═══════════════════════════════════════════════════════
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=()"
+    )
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "font-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    return response
+
+
 # ── Helpers ──────────────────────────────────────────────
-
-
-SESSION_TTL = 1800  # 30 分钟无活动则过期
 
 
 def _debug_dump(label: str, data: dict):
@@ -119,17 +172,128 @@ def _debug_dump(label: str, data: dict):
         if isinstance(obj, str):
             return obj[:80] + ("..." if len(obj) > 80 else "")
         return type(obj).__name__
+
     try:
-        logger.info(f"[DEBUG] {label}: {json.dumps(_shape(data), ensure_ascii=False, indent=2)}")
+        logger.info(
+            f"[DEBUG] {label}: {json.dumps(_shape(data), ensure_ascii=False, indent=2)}"
+        )
     except Exception:
         logger.info(f"[DEBUG] {label}: (dump failed)")
 
 
-def _session(sid: str) -> requests.Session:
+def _get_client_ip(request: Request) -> str:
+    """从请求中提取真实客户端 IP，兼容 CF Worker / Nginx / 直连"""
+    # Cloudflare Worker 反代
+    cf_ip = request.headers.get("CF-Connecting-IP", "")
+    if cf_ip:
+        return cf_ip.strip()
+    # 标准反向代理 (Nginx / CDN)
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    # Nginx 单跳反代
+    real_ip = request.headers.get("X-Real-IP", "")
+    if real_ip:
+        return real_ip.strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _ips_equal(a: str, b: str) -> bool:
+    """比较两个 IP 是否等价（含 IPv4/IPv6 loopback 归一化）"""
+    if a == b:
+        return True
+    loopback = {"127.0.0.1", "::1", "0:0:0:0:0:0:0:1"}
+    return a in loopback and b in loopback
+
+
+# ═══════════════════════════════════════════════════════
+#  Auth Dependencies
+# ═══════════════════════════════════════════════════════
+
+
+def _session(sid: str, request: Request | None = None) -> requests.Session:
+    """验证会话存在、刷新 TTL、校验 IP/UA 绑定"""
     if sid not in sessions:
         raise HTTPException(404, "会话不存在或已过期，请刷新页面")
-    sessions[sid]["_at"] = time.time()
-    return sessions[sid]["http"]
+
+    s = sessions[sid]
+    s["_at"] = time.time()
+
+    # IP/UA 绑定校验
+    if request and s.get("client_ip"):
+        current_ip = _get_client_ip(request)
+        if not _ips_equal(current_ip, s["client_ip"]):
+            logger.warning(
+                f"会话 {sid[:8]} IP 不匹配: stored={s['client_ip']} current={current_ip}"
+            )
+            raise HTTPException(403, "会话验证失败，请刷新页面重试")
+
+    return s["http"]
+
+
+def _require_login(sid: str, request: Request | None = None) -> requests.Session:
+    """验证会话已登录"""
+    http = _session(sid, request)
+    if not sessions[sid].get("logged_in"):
+        raise HTTPException(401, "请先登录")
+    return http
+
+
+def _require_admin(
+    admin_token: str = Cookie(None, alias="admin_token"),
+) -> None:
+    """验证管理 API 密钥 (来自 Cookie)"""
+    if not admin_token or admin_token != get_api_key():
+        raise HTTPException(401, "管理认证失败，请刷新页面重试")
+
+
+def _check_rate_limit(request: Request, username: str):
+    """登录频率限制检查，超限抛出 HTTPException(429)"""
+    ip = _get_client_ip(request)
+    now = time.time()
+    window_start = now - LOGIN_RATE_WINDOW
+
+    with _rate_lock:
+        # 清理过期记录
+        _login_attempts["ip"][ip] = [
+            (ts, un)
+            for ts, un in _login_attempts["ip"][ip]
+            if ts > window_start
+        ]
+        _login_attempts["username"][username] = [
+            (ts, i)
+            for ts, i in _login_attempts["username"][username]
+            if ts > window_start
+        ]
+
+        ip_count = len(_login_attempts["ip"][ip])
+        if ip_count >= MAX_LOGIN_ATTEMPTS_IP:
+            logger.warning(f"IP 频率限制触发: {ip} ({ip_count} 次)")
+            raise HTTPException(429, "登录尝试过于频繁，请稍后再试")
+
+        uname_count = len(_login_attempts["username"][username])
+        if uname_count >= MAX_LOGIN_ATTEMPTS_USERNAME:
+            logger.warning(f"用户名频率限制触发: {username} ({uname_count} 次)")
+            raise HTTPException(429, "该账号登录尝试过于频繁，请稍后再试")
+
+        _login_attempts["ip"][ip].append((now, username))
+        _login_attempts["username"][username].append((now, ip))
+
+
+def _sanitize_telegram_html(text: str) -> str:
+    """移除危险 HTML 标签，仅保留 Telegram 安全标签"""
+    dangerous = (
+        r"<\s*(script|iframe|object|embed|link|style|meta|applet"
+        r"|form|input|base|frame|frameset|head|html|body)"
+        r"[^>]*>.*?<\s*/\s*\1\s*>"
+        r"|"
+        r"<(script|iframe|object|embed|link|style|meta|applet"
+        r"|form|input|base|frame|frameset|head|html|body)[^>]*/?>"
+    )
+    sanitized = re.sub(dangerous, "", text, flags=re.IGNORECASE | re.DOTALL)
+    if len(sanitized) > 4096:
+        sanitized = sanitized[:4096]
+    return sanitized
 
 
 def _parse_sso(body: str):
@@ -138,7 +302,6 @@ def _parse_sso(body: str):
     txmy = re.search(r'var txmy\s*=\s*"([^"]+)"', body)
     njdm = re.search(r'var njdm\s*=\s*"([^"]+)"', body)
     if not (yhzh and txmy and njdm):
-        # Try alternate patterns
         yhzh = re.search(r"yhzh\s*=\s*'([^']+)'", body)
         txmy = re.search(r"txmy\s*=\s*'([^']+)'", body)
         njdm = re.search(r"njdm\s*=\s*'([^']+)'", body)
@@ -185,7 +348,9 @@ class MonitorThread(threading.Thread):
             except Exception as e:
                 cfg["consecutive_failures"] = cfg.get("consecutive_failures", 0) + 1
                 cfg["last_error"] = str(e)
-                logger.error(f"监测检查失败 (连续 {cfg['consecutive_failures']} 次): {e}")
+                logger.error(
+                    f"监测检查失败 (连续 {cfg['consecutive_failures']} 次): {e}"
+                )
                 if "FATAL" in str(e):
                     cfg["monitor_enabled"] = False
                     save_config(cfg)
@@ -195,8 +360,11 @@ class MonitorThread(threading.Thread):
                             f"<b>CloudMarking 监测已停用</b>\n{cfg['last_error']}",
                         )
                     break
-                # 连续 3 次失败 → Telegram 告警
-                if cfg["consecutive_failures"] >= 3 and cfg.get("tg_token") and cfg.get("tg_chat_id"):
+                if (
+                    cfg["consecutive_failures"] >= 3
+                    and cfg.get("tg_token")
+                    and cfg.get("tg_chat_id")
+                ):
                     self._send_tg(
                         cfg,
                         f"<b>CloudMarking 监测告警</b>\n连续 {cfg['consecutive_failures']} 次检查失败\n最近错误: {e}",
@@ -249,7 +417,9 @@ class MonitorThread(threading.Thread):
 
         # 4. SSO 跳转
         yhzh, txmy, njdm = _parse_sso(body)
-        sess.get(f"{BASE2}/sixslogin.do?yhzh={yhzh}&txmy={txmy}&njdm={njdm}", timeout=15)
+        sess.get(
+            f"{BASE2}/sixslogin.do?yhzh={yhzh}&txmy={txmy}&njdm={njdm}", timeout=15
+        )
 
         # 5. 获取考试列表
         resp = sess.post(
@@ -301,7 +471,9 @@ class MonitorThread(threading.Thread):
                 )
 
         # 7. 计算哈希 + 变化检测
-        hash_input = json.dumps(all_scores, sort_keys=True, ensure_ascii=False, default=str)
+        hash_input = json.dumps(
+            all_scores, sort_keys=True, ensure_ascii=False, default=str
+        )
         new_hash = hashlib.md5(hash_input.encode()).hexdigest()
         old_hash = cfg.get("last_hash", "")
         changed = old_hash and new_hash != old_hash
@@ -345,7 +517,6 @@ class MonitorThread(threading.Thread):
             "exams": cached_scores,
         }
 
-        # 首次检查不发通知, 有变化才发
         if changed and cfg.get("tg_token") and cfg.get("tg_chat_id"):
             self._notify_changes(cfg, all_scores)
 
@@ -386,7 +557,9 @@ class MonitorThread(threading.Thread):
             )
             subs = []
             for km in d.get("gkksxx", []):
-                subs.append(f'{km["KMMC"]}:{km["KSCJ"]}(B{km["BJPM"]}/G{km["NJPM"]})')
+                subs.append(
+                    f'{km["KMMC"]}:{km["KSCJ"]}(B{km["BJPM"]}/G{km["NJPM"]})'
+                )
             lines.append(" | ".join(subs))
             xdb = cj.get("XDBRKMMC", "")
             if xdb:
@@ -404,7 +577,11 @@ class MonitorThread(threading.Thread):
         try:
             requests.post(
                 f'https://api.telegram.org/bot{cfg["tg_token"]}/sendMessage',
-                json={"chat_id": cfg["tg_chat_id"], "text": text, "parse_mode": "HTML"},
+                json={
+                    "chat_id": cfg["tg_chat_id"],
+                    "text": text,
+                    "parse_mode": "HTML",
+                },
                 timeout=15,
             )
         except Exception as e:
@@ -422,11 +599,14 @@ def get_monitor() -> Optional[MonitorThread]:
 
 
 @app.post("/api/session")
-def create_session():
-    """Step 1: 建立会话，获取初始 Cookie"""
-    # 清理过期会话
+def create_session(request: Request):
+    """建立会话，获取初始 Cookie (绑定 IP/UA)"""
     now = time.time()
-    expired = [sid for sid, v in sessions.items() if now - v.get("_at", 0) > SESSION_TTL]
+    expired = [
+        sid
+        for sid, v in sessions.items()
+        if now - v.get("_at", 0) > SESSION_TTL
+    ]
     for sid in expired:
         del sessions[sid]
     if expired:
@@ -439,13 +619,25 @@ def create_session():
         http.get(f"{BASE}/", timeout=15)
     except requests.RequestException as e:
         raise HTTPException(502, f"无法连接云阅卷平台: {e}")
-    sessions[sid] = {"http": http, "logged_in": False, "exam_params": None, "_at": now}
+
+    client_ip = _get_client_ip(request)
+    client_ua = request.headers.get("User-Agent", "")
+
+    sessions[sid] = {
+        "http": http,
+        "logged_in": False,
+        "exam_params": None,
+        "_at": now,
+        "client_ip": client_ip,
+        "client_ua": client_ua,
+    }
+    logger.info(f"会话已创建: {sid[:8]}... ip={client_ip}")
     return {"session_id": sid}
 
 
 @app.get("/api/organizations")
-def get_organizations():
-    """获取可用学校/组织列表"""
+def get_organizations(_admin: None = Depends(_require_admin)):
+    """获取可用学校/组织列表 (需管理认证)"""
     http = requests.Session()
     http.headers.update({"User-Agent": UA})
     try:
@@ -468,9 +660,9 @@ def get_organizations():
 
 
 @app.post("/api/captcha")
-def get_captcha(session_id: str = Form(...)):
+def get_captcha(session_id: str = Form(...), request: Request = None):
     """获取验证码图片 (base64) + OCR 自动识别结果"""
-    http = _session(session_id)
+    http = _session(session_id, request)
     try:
         resp = http.get(
             f"{BASE}/image.jsp?rnd={int(time.time() * 1000)}", timeout=15
@@ -478,7 +670,6 @@ def get_captcha(session_id: str = Form(...)):
         img_bytes = resp.content
         b64 = base64.b64encode(img_bytes).decode()
 
-        # 探测 content-type
         ct = resp.headers.get("Content-Type", "image/png")
         if "jpeg" in ct or "jpg" in ct:
             prefix = "data:image/jpeg;base64,"
@@ -514,11 +705,13 @@ def login(
     username: str = Form(...),
     password: str = Form(...),
     captcha: str = Form(...),
+    request: Request = None,
 ):
-    """Step 2-3: 学生登录 + SSO 跳转到 CloudAnalysis"""
-    http = _session(session_id)
+    """学生登录 + SSO 跳转到 CloudAnalysis (含频率限制)"""
+    _check_rate_limit(request, username)
 
-    # ── 登录 CloudMarking ──
+    http = _session(session_id, request)
+
     try:
         resp = http.post(
             f"{BASE}/xslogin.do",
@@ -536,7 +729,6 @@ def login(
 
     body = resp.text
 
-    # 检测错误
     if re.search(r"验证码错误|验证码不正确|验证码已过期", body):
         raise HTTPException(400, "验证码错误，请重新获取")
     if re.search(r"密码错误|密码不正确", body):
@@ -544,10 +736,8 @@ def login(
     if re.search(r"用户不存在|账号不存在|考生不存在|学籍号不存在", body):
         raise HTTPException(400, "学籍号不存在")
 
-    # 提取 SSO 参数
     yhzh, txmy, njdm = _parse_sso(body)
 
-    # ── SSO 跳转到 CloudAnalysis ──
     sso_url = f"{BASE2}/sixslogin.do?yhzh={yhzh}&txmy={txmy}&njdm={njdm}"
     try:
         http.get(sso_url, timeout=15)
@@ -561,11 +751,9 @@ def login(
 
 
 @app.get("/api/exams")
-def get_exams(session_id: str = Query(...)):
-    """Step 4: 获取考试列表"""
-    http = _session(session_id)
-    if not sessions[session_id].get("logged_in"):
-        raise HTTPException(401, "请先登录")
+def get_exams(session_id: str = Query(...), request: Request = None):
+    """获取考试列表 (需已登录)"""
+    http = _require_login(session_id, request)
 
     try:
         resp = http.post(
@@ -624,9 +812,11 @@ def get_exams(session_id: str = Query(...)):
 
 
 @app.get("/api/scores/{exam_index}")
-def get_scores(exam_index: int, session_id: str = Query(...)):
-    """Step 5: 获取单次考试的详细成绩"""
-    http = _session(session_id)
+def get_scores(
+    exam_index: int, session_id: str = Query(...), request: Request = None
+):
+    """获取单次考试的详细成绩 (需已登录)"""
+    http = _require_login(session_id, request)
     params = sessions[session_id].get("exam_params")
     if not params:
         raise HTTPException(400, "请先获取考试列表")
@@ -658,7 +848,6 @@ def get_scores(exam_index: int, session_id: str = Query(...)):
     except requests.RequestException as e:
         raise HTTPException(502, f"获取成绩失败: {e}")
 
-    # Debug: log raw response structure
     _debug_dump("get_scores raw", data)
 
     if not data.get("res"):
@@ -680,11 +869,9 @@ def get_scores(exam_index: int, session_id: str = Query(...)):
             }
         )
 
-    # 优弱势科目
     strengths = cj.get("JDBRKMMC", "")
     weaknesses = cj.get("XDBRKMMC", "")
 
-    # 变化趋势
     changes = []
     for item in data.get("grgkpwlist", data.get("bckscjkmlist", [])):
         diff = item.get("CJL", 0)
@@ -696,7 +883,6 @@ def get_scores(exam_index: int, session_id: str = Query(...)):
             }
         )
 
-    # 班级排名
     classmates = data.get("bjstucjxx", [])
 
     return {
@@ -724,9 +910,9 @@ def get_scores(exam_index: int, session_id: str = Query(...)):
 
 
 @app.get("/api/scores/all")
-def get_all_scores(session_id: str = Query(...)):
-    """批量获取所有考试的详细成绩（用于趋势图）"""
-    http = _session(session_id)
+def get_all_scores(session_id: str = Query(...), request: Request = None):
+    """批量获取所有考试的详细成绩 (需已登录)"""
+    http = _require_login(session_id, request)
     params = sessions[session_id].get("exam_params")
     if not params:
         raise HTTPException(400, "请先获取考试列表")
@@ -755,19 +941,23 @@ def get_all_scores(session_id: str = Query(...)):
             data = resp.json()
         except requests.RequestException as e:
             logger.warning(f"获取考试 {exam['name']} 成绩失败: {e}")
-            results.append({
-                "exam_name": exam["name"],
-                "exam_date": exam.get("date", ""),
-                "error": str(e),
-            })
+            results.append(
+                {
+                    "exam_name": exam["name"],
+                    "exam_date": exam.get("date", ""),
+                    "error": str(e),
+                }
+            )
             continue
 
         if not data.get("res"):
-            results.append({
-                "exam_name": exam["name"],
-                "exam_date": exam.get("date", ""),
-                "error": data.get("msg", "获取成绩失败"),
-            })
+            results.append(
+                {
+                    "exam_name": exam["name"],
+                    "exam_date": exam.get("date", ""),
+                    "error": data.get("msg", "获取成绩失败"),
+                }
+            )
             continue
 
         cj = data.get("cjpmbrkm", {})
@@ -775,24 +965,28 @@ def get_all_scores(session_id: str = Query(...)):
 
         subjects = []
         for km in data.get("gkksxx", []):
-            subjects.append({
-                "name": km.get("KMMC", ""),
-                "score": km.get("KSCJ", ""),
-                "class_rank": km.get("BJPM", ""),
-                "grade_rank": km.get("NJPM", ""),
-                "class_avg": km.get("BJPJF", ""),
-                "grade_avg": km.get("NJPJF", ""),
-            })
+            subjects.append(
+                {
+                    "name": km.get("KMMC", ""),
+                    "score": km.get("KSCJ", ""),
+                    "class_rank": km.get("BJPM", ""),
+                    "grade_rank": km.get("NJPM", ""),
+                    "class_avg": km.get("BJPJF", ""),
+                    "grade_avg": km.get("NJPJF", ""),
+                }
+            )
 
-        results.append({
-            "exam_name": exam["name"],
-            "exam_date": exam.get("date", ""),
-            "total_score": cj.get("ZF", ""),
-            "class_rank": cj.get("BJPM", ""),
-            "grade_rank": cj.get("JFPM", ""),
-            "total_students": bj.get("ZRS", ""),
-            "subjects": subjects,
-        })
+        results.append(
+            {
+                "exam_name": exam["name"],
+                "exam_date": exam.get("date", ""),
+                "total_score": cj.get("ZF", ""),
+                "class_rank": cj.get("BJPM", ""),
+                "grade_rank": cj.get("JFPM", ""),
+                "total_students": bj.get("ZRS", ""),
+                "subjects": subjects,
+            }
+        )
 
     return {
         "student": {
@@ -808,9 +1002,11 @@ def send_telegram(
     exam_index: int = Form(...),
     tg_token: str = Form(...),
     tg_chat_id: str = Form(...),
+    request: Request = None,
 ):
-    """发送 Telegram 通知"""
-    # 脱敏 token 从配置读取真实值
+    """发送 Telegram 通知 (需已登录)"""
+    http = _require_login(session_id, request)
+
     cfg = load_config()
     if not tg_token or "***" in tg_token:
         tg_token = cfg.get("tg_token", "")
@@ -819,7 +1015,6 @@ def send_telegram(
     if not tg_token or not tg_chat_id:
         raise HTTPException(400, "Telegram Token 或 Chat ID 未配置")
 
-    http = _session(session_id)
     params = sessions[session_id].get("exam_params")
     if not params:
         raise HTTPException(400, "请先获取考试列表")
@@ -830,7 +1025,6 @@ def send_telegram(
 
     exam = exams[exam_index]
 
-    # 获取成绩
     try:
         resp = http.post(
             f"{BASE2}/stuckfx_getStuNavi.do",
@@ -856,7 +1050,6 @@ def send_telegram(
     if not data.get("res"):
         raise HTTPException(400, "获取成绩失败")
 
-    # 构建 Telegram 消息
     bj = data.get("bjcjjizhi", {})
     cj = data.get("cjpmbrkm", {})
 
@@ -870,9 +1063,7 @@ def send_telegram(
 
     subs = []
     for km in data.get("gkksxx", []):
-        subs.append(
-            f'{km["KMMC"]}:{km["KSCJ"]}(B{km["BJPM"]}/G{km["NJPM"]})'
-        )
+        subs.append(f'{km["KMMC"]}:{km["KSCJ"]}(B{km["BJPM"]}/G{km["NJPM"]})')
     lines.append(" | ".join(subs))
 
     jdb = cj.get("JDBRKMMC", "")
@@ -892,7 +1083,6 @@ def send_telegram(
 
     text = "\n".join(lines)
 
-    # 发送
     try:
         tg_resp = requests.post(
             f"https://api.telegram.org/bot{tg_token}/sendMessage",
@@ -917,26 +1107,38 @@ def send_telegram_cached(
     text: str = Form(...),
     tg_token: str = Form(""),
     tg_chat_id: str = Form(""),
+    _admin: None = Depends(_require_admin),
 ):
-    """发送自定义文本到 Telegram（无需会话；token 含 *** 时从配置读取真实值）"""
+    """发送自定义文本到 Telegram (需管理认证，含内容过滤)"""
     cfg = load_config()
-    # 如果传入的 token 是脱敏值或为空，从配置读取真实值
     if not tg_token or "***" in tg_token:
         tg_token = cfg.get("tg_token", "")
     if not tg_chat_id or "***" in tg_chat_id:
         tg_chat_id = cfg.get("tg_chat_id", "")
     if not tg_token or not tg_chat_id:
         raise HTTPException(400, "Telegram Token 或 Chat ID 未配置")
+
+    # 内容安全过滤
+    sanitized = _sanitize_telegram_html(text)
+    if sanitized != text:
+        logger.warning("Telegram 消息内容已被过滤")
+
     try:
         tg_resp = requests.post(
             f"https://api.telegram.org/bot{tg_token}/sendMessage",
-            json={"chat_id": tg_chat_id, "text": text, "parse_mode": "HTML"},
+            json={
+                "chat_id": tg_chat_id,
+                "text": sanitized,
+                "parse_mode": "HTML",
+            },
             timeout=15,
         )
         result = tg_resp.json()
         if result.get("ok"):
             return {"status": "ok", "message": "发送成功"}
-        raise HTTPException(400, f'发送失败: {result.get("description", "未知错误")}')
+        raise HTTPException(
+            400, f'发送失败: {result.get("description", "未知错误")}'
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -944,7 +1146,7 @@ def send_telegram_cached(
 
 
 # ═══════════════════════════════════════════════════════
-#  Config API
+#  Config API (需管理认证)
 # ═══════════════════════════════════════════════════════
 
 
@@ -958,8 +1160,9 @@ def save_config_api(
     monitor_enabled: bool = Form(False),
     monitor_interval: int = Form(3600),
     last_scores: str = Form(""),
+    _admin: None = Depends(_require_admin),
 ):
-    """保存配置 (last_scores 为 JSON 字符串)"""
+    """保存配置 (需管理认证)"""
     cfg = load_config()
     if org_id:
         cfg["org_id"] = org_id
@@ -984,8 +1187,11 @@ def save_config_api(
 
 
 @app.post("/api/config/scores")
-def save_scores_cache(last_scores: str = Form(...)):
-    """仅更新 last_scores 缓存，不影响监测等其他配置"""
+def save_scores_cache(
+    last_scores: str = Form(...),
+    _admin: None = Depends(_require_admin),
+):
+    """仅更新 last_scores 缓存 (需管理认证)"""
     cfg = load_config()
     try:
         cfg["last_scores"] = json.loads(last_scores)
@@ -996,26 +1202,29 @@ def save_scores_cache(last_scores: str = Form(...)):
 
 
 @app.get("/api/config")
-def get_config():
-    """读取配置（密码脱敏）"""
+def get_config(_admin: None = Depends(_require_admin)):
+    """读取配置 (需管理认证，敏感字段已脱敏)"""
     cfg = load_config()
     masked = dict(cfg)
-    if masked.get("password"):
-        masked["password"] = masked["password"][:2] + "***"
-    if masked.get("tg_token"):
-        t = masked["tg_token"]
-        masked["tg_token"] = t[:8] + "***" + t[-4:] if len(t) > 12 else "***"
+    # 完全隐藏密码 (">>>" 用于前端识别脱敏值)
+    masked["password"] = "***"
+    # Token 仅显示最后 4 位用于识别
+    t = masked.get("tg_token", "")
+    if t:
+        masked["tg_token"] = "***" + t[-4:]
+    # 不暴露 api_key
+    masked.pop("api_key", None)
     return masked
 
 
 # ═══════════════════════════════════════════════════════
-#  Monitor API
+#  Monitor API (需管理认证)
 # ═══════════════════════════════════════════════════════
 
 
 @app.get("/api/monitor/status")
-def monitor_status():
-    """获取监测状态"""
+def monitor_status(_admin: None = Depends(_require_admin)):
+    """获取监测状态 (需管理认证)"""
     global _monitor_thread
     cfg = load_config()
     running = bool(get_monitor())
@@ -1043,12 +1252,18 @@ def monitor_status():
 
 
 @app.post("/api/monitor/start")
-def monitor_start():
-    """启动监测"""
+def monitor_start(_admin: None = Depends(_require_admin)):
+    """启动监测 (需管理认证)"""
     global _monitor_thread
     cfg = load_config()
-    if not cfg.get("org_id") or not cfg.get("username") or not cfg.get("password"):
-        raise HTTPException(400, "请先保存登录凭据 (org_id/username/password)")
+    if (
+        not cfg.get("org_id")
+        or not cfg.get("username")
+        or not cfg.get("password")
+    ):
+        raise HTTPException(
+            400, "请先保存登录凭据 (org_id/username/password)"
+        )
     if not HAS_OCR:
         raise HTTPException(400, "ddddocr 未安装，无法自动识别验证码")
 
@@ -1066,8 +1281,8 @@ def monitor_start():
 
 
 @app.post("/api/monitor/stop")
-def monitor_stop():
-    """停止监测"""
+def monitor_stop(_admin: None = Depends(_require_admin)):
+    """停止监测 (需管理认证)"""
     global _monitor_thread
     cfg = load_config()
     cfg["monitor_enabled"] = False
@@ -1081,10 +1296,14 @@ def monitor_stop():
 
 
 @app.post("/api/monitor/check")
-def monitor_check_now():
-    """立即执行一次检查"""
+def monitor_check_now(_admin: None = Depends(_require_admin)):
+    """立即执行一次检查 (需管理认证)"""
     cfg = load_config()
-    if not cfg.get("org_id") or not cfg.get("username") or not cfg.get("password"):
+    if (
+        not cfg.get("org_id")
+        or not cfg.get("username")
+        or not cfg.get("password")
+    ):
         raise HTTPException(400, "请先保存登录凭据")
     if not HAS_OCR:
         raise HTTPException(400, "ddddocr 未安装，无法自动识别验证码")
@@ -1095,7 +1314,11 @@ def monitor_check_now():
         cfg["consecutive_failures"] = 0
         cfg["last_error"] = ""
         save_config(cfg)
-        return {"status": "ok", "message": "检查完成", "changed": cfg.get("last_hash") != cfg.get("_prev_hash", "")}
+        return {
+            "status": "ok",
+            "message": "检查完成",
+            "changed": cfg.get("last_hash") != cfg.get("_prev_hash", ""),
+        }
     except Exception as e:
         cfg["last_error"] = str(e)
         cfg["consecutive_failures"] = cfg.get("consecutive_failures", 0) + 1
@@ -1104,7 +1327,7 @@ def monitor_check_now():
 
 
 # ═══════════════════════════════════════════════════════
-#  Bing Daily Image API
+#  Bing Daily Image API (公开)
 # ═══════════════════════════════════════════════════════
 
 BING_API = "https://cn.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1"
@@ -1151,8 +1374,11 @@ def bing_markdown_page():
         copyright_link = img.get("copyrightlink", "")
         end_date = img.get("enddate", "")
 
-        # 格式化日期
-        date_str = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}" if len(end_date) >= 8 else end_date
+        date_str = (
+            f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+            if len(end_date) >= 8
+            else end_date
+        )
 
         html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1286,14 +1512,16 @@ def bing_markdown_page():
 
 
 # ═══════════════════════════════════════════════════════
-#  Debug: raw score response inspector
+#  Debug: raw score response inspector (需已登录)
 # ═══════════════════════════════════════════════════════
 
 
 @app.get("/api/debug/raw-score/{exam_index}")
-def debug_raw_score(exam_index: int, session_id: str = Query(...)):
-    """Return raw stuckfx_getStuNavi.do response for debugging field names."""
-    http = _session(session_id)
+def debug_raw_score(
+    exam_index: int, session_id: str = Query(...), request: Request = None
+):
+    """Return raw stuckfx_getStuNavi.do response for debugging (需已登录)."""
+    http = _require_login(session_id, request)
     params = sessions[session_id].get("exam_params")
     if not params:
         raise HTTPException(400, "请先获取考试列表")
@@ -1304,9 +1532,12 @@ def debug_raw_score(exam_index: int, session_id: str = Query(...)):
     resp = http.post(
         f"{BASE2}/stuckfx_getStuNavi.do",
         data={
-            "ksdm": exam["ksdm"], "kldm": exam["kldm"],
-            "ksid": params["ksid"], "bjdm": params["bjdm"],
-            "njdm": params["njdm"], "kmdm": "",
+            "ksdm": exam["ksdm"],
+            "kldm": exam["kldm"],
+            "ksid": params["ksid"],
+            "bjdm": params["bjdm"],
+            "njdm": params["njdm"],
+            "kmdm": "",
         },
         headers={
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -1328,11 +1559,24 @@ STATIC.mkdir(exist_ok=True)
 
 @app.get("/")
 def index():
-    """Serve the frontend SPA"""
+    """Serve the frontend SPA and set admin auth cookie"""
     index_file = STATIC / "index.html"
     if index_file.exists():
-        return FileResponse(index_file)
-    return HTMLResponse("<h1>Frontend not found. Create static/index.html</h1>")
+        response = FileResponse(index_file)
+    else:
+        response = HTMLResponse(
+            "<h1>Frontend not found. Create static/index.html</h1>"
+        )
+    # 设置管理认证 Cookie (非 HttpOnly，前端无需读取)
+    response.set_cookie(
+        key="admin_token",
+        value=get_api_key(),
+        path="/",
+        samesite="lax",
+        secure=False,
+        httponly=True,
+    )
+    return response
 
 
 # Mount static files after defining / so it doesn't shadow it
@@ -1351,4 +1595,3 @@ if __name__ == "__main__":
             _monitor_thread.start()
 
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
-#结束
