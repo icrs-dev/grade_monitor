@@ -184,21 +184,23 @@ def _debug_dump(label: str, data: dict):
 def _get_client_ip(request: Request) -> str:
     """从请求中提取真实客户端 IP，兼容 CF Worker / Nginx / 直连
 
-    优先级: X-Real-IP (CF Worker 显式设置) > CF-Connecting-IP (直连 CF)
-           > X-Forwarded-For (标准代理链) > 直连 IP
+    优先级: CF-Connecting-IP (CF 原始客户端，Worker 子请求也会传播)
+           > X-Forwarded-For (标准代理链，首跳即真实 IP)
+           > X-Real-IP (NGINX 单跳，但 CF WAF 会覆盖，仅作兜底)
+           > 直连 IP
     """
-    # CF Worker 反代: 显式将原始 cf-connecting-ip 写入 X-Real-IP
-    real_ip = request.headers.get("X-Real-IP", "")
-    if real_ip:
-        return real_ip.strip()
-    # 直连 Cloudflare (无 Worker 层)
+    # Cloudflare 原始客户端 IP (Worker 子请求上也会正确传播)
     cf_ip = request.headers.get("CF-Connecting-IP", "")
     if cf_ip:
         return cf_ip.strip()
-    # 标准反向代理 (Nginx / CDN)
+    # 标准代理链: 取首个 IP (最接近客户端)
     forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:
         return forwarded.split(",")[0].strip()
+    # NGINX 单跳 / CF Worker 显式设置 (CF WAF 可能会覆盖此值，仅兜底)
+    real_ip = request.headers.get("X-Real-IP", "")
+    if real_ip:
+        return real_ip.strip()
     return request.client.host if request.client else "unknown"
 
 
