@@ -106,8 +106,7 @@ def get_api_key():
 
 
 # ── Session store ────────────────────────────────────────
-# { sid: { "http": requests.Session, "logged_in": bool, "exam_params": dict,
-#          "client_ip": str, "client_ua": str, "_at": float, ... } }
+# { sid: { "http": requests.Session, "logged_in": bool, "exam_params": dict, "_at": float } }
 sessions: dict = {}
 
 # ── Rate limiting store ──────────────────────────────────
@@ -181,65 +180,24 @@ def _debug_dump(label: str, data: dict):
         logger.info(f"[DEBUG] {label}: (dump failed)")
 
 
-def _get_client_ip(request: Request) -> str:
-    """从请求中提取真实客户端 IP，兼容 CF Worker / Nginx / 直连
-
-    优先级: CF-Connecting-IP (CF 原始客户端，Worker 子请求也会传播)
-           > X-Forwarded-For (标准代理链，首跳即真实 IP)
-           > X-Real-IP (NGINX 单跳，但 CF WAF 会覆盖，仅作兜底)
-           > 直连 IP
-    """
-    # Cloudflare 原始客户端 IP (Worker 子请求上也会正确传播)
-    cf_ip = request.headers.get("CF-Connecting-IP", "")
-    if cf_ip:
-        return cf_ip.strip()
-    # 标准代理链: 取首个 IP (最接近客户端)
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    # NGINX 单跳 / CF Worker 显式设置 (CF WAF 可能会覆盖此值，仅兜底)
-    real_ip = request.headers.get("X-Real-IP", "")
-    if real_ip:
-        return real_ip.strip()
-    return request.client.host if request.client else "unknown"
-
-
-def _ips_equal(a: str, b: str) -> bool:
-    """比较两个 IP 是否等价（含 IPv4/IPv6 loopback 归一化）"""
-    if a == b:
-        return True
-    loopback = {"127.0.0.1", "::1", "0:0:0:0:0:0:0:1"}
-    return a in loopback and b in loopback
-
-
 # ═══════════════════════════════════════════════════════
 #  Auth Dependencies
 # ═══════════════════════════════════════════════════════
 
 
-def _session(sid: str, request: Request | None = None) -> requests.Session:
-    """验证会话存在、刷新 TTL、校验 IP/UA 绑定"""
+def _session(sid: str) -> requests.Session:
+    """验证会话存在并刷新 TTL"""
     if sid not in sessions:
         raise HTTPException(404, "会话不存在或已过期，请刷新页面")
 
     s = sessions[sid]
     s["_at"] = time.time()
-
-    # IP 变化仅记录日志，不阻塞 (CDN 边缘节点 IPv4/IPv6 切换属于正常行为)
-    if request and s.get("client_ip"):
-        current_ip = _get_client_ip(request)
-        if not _ips_equal(current_ip, s["client_ip"]):
-            logger.info(
-                f"会话 {sid[:8]} IP 变化: {s['client_ip']} -> {current_ip}"
-            )
-            s["client_ip"] = current_ip
-
     return s["http"]
 
 
-def _require_login(sid: str, request: Request | None = None) -> requests.Session:
+def _require_login(sid: str) -> requests.Session:
     """验证会话已登录"""
-    http = _session(sid, request)
+    http = _session(sid)
     if not sessions[sid].get("logged_in"):
         raise HTTPException(401, "请先登录")
     return http
@@ -255,7 +213,7 @@ def _require_admin(
 
 def _check_rate_limit(request: Request, username: str):
     """登录频率限制检查，超限抛出 HTTPException(429)"""
-    ip = _get_client_ip(request)
+    ip = request.client.host if request.client else "unknown"
     now = time.time()
     window_start = now - LOGIN_RATE_WINDOW
 
@@ -605,8 +563,8 @@ def get_monitor() -> Optional[MonitorThread]:
 
 
 @app.post("/api/session")
-def create_session(request: Request):
-    """建立会话，获取初始 Cookie (绑定 IP/UA)"""
+def create_session():
+    """建立会话，获取初始 Cookie"""
     now = time.time()
     expired = [
         sid
@@ -626,18 +584,13 @@ def create_session(request: Request):
     except requests.RequestException as e:
         raise HTTPException(502, f"无法连接云阅卷平台: {e}")
 
-    client_ip = _get_client_ip(request)
-    client_ua = request.headers.get("User-Agent", "")
-
     sessions[sid] = {
         "http": http,
         "logged_in": False,
         "exam_params": None,
         "_at": now,
-        "client_ip": client_ip,
-        "client_ua": client_ua,
     }
-    logger.info(f"会话已创建: {sid[:8]}... ip={client_ip}")
+    logger.info(f"会话已创建: {sid[:8]}...")
     return {"session_id": sid}
 
 
@@ -666,9 +619,9 @@ def get_organizations(_admin: None = Depends(_require_admin)):
 
 
 @app.post("/api/captcha")
-def get_captcha(session_id: str = Form(...), request: Request = None):
+def get_captcha(session_id: str = Form(...)):
     """获取验证码图片 (base64) + OCR 自动识别结果"""
-    http = _session(session_id, request)
+    http = _session(session_id)
     try:
         resp = http.get(
             f"{BASE}/image.jsp?rnd={int(time.time() * 1000)}", timeout=15
@@ -716,7 +669,7 @@ def login(
     """学生登录 + SSO 跳转到 CloudAnalysis (含频率限制)"""
     _check_rate_limit(request, username)
 
-    http = _session(session_id, request)
+    http = _session(session_id)
 
     try:
         resp = http.post(
@@ -757,9 +710,9 @@ def login(
 
 
 @app.get("/api/exams")
-def get_exams(session_id: str = Query(...), request: Request = None):
+def get_exams(session_id: str = Query(...)):
     """获取考试列表 (需已登录)"""
-    http = _require_login(session_id, request)
+    http = _require_login(session_id)
 
     try:
         resp = http.post(
@@ -819,10 +772,10 @@ def get_exams(session_id: str = Query(...), request: Request = None):
 
 @app.get("/api/scores/{exam_index}")
 def get_scores(
-    exam_index: int, session_id: str = Query(...), request: Request = None
+    exam_index: int, session_id: str = Query(...),
 ):
     """获取单次考试的详细成绩 (需已登录)"""
-    http = _require_login(session_id, request)
+    http = _require_login(session_id)
     params = sessions[session_id].get("exam_params")
     if not params:
         raise HTTPException(400, "请先获取考试列表")
@@ -916,9 +869,9 @@ def get_scores(
 
 
 @app.get("/api/scores/all")
-def get_all_scores(session_id: str = Query(...), request: Request = None):
+def get_all_scores(session_id: str = Query(...)):
     """批量获取所有考试的详细成绩 (需已登录)"""
-    http = _require_login(session_id, request)
+    http = _require_login(session_id)
     params = sessions[session_id].get("exam_params")
     if not params:
         raise HTTPException(400, "请先获取考试列表")
@@ -1008,10 +961,9 @@ def send_telegram(
     exam_index: int = Form(...),
     tg_token: str = Form(...),
     tg_chat_id: str = Form(...),
-    request: Request = None,
 ):
     """发送 Telegram 通知 (需已登录)"""
-    http = _require_login(session_id, request)
+    http = _require_login(session_id)
 
     cfg = load_config()
     if not tg_token or "***" in tg_token:
@@ -1524,10 +1476,10 @@ def bing_markdown_page():
 
 @app.get("/api/debug/raw-score/{exam_index}")
 def debug_raw_score(
-    exam_index: int, session_id: str = Query(...), request: Request = None
+    exam_index: int, session_id: str = Query(...),
 ):
     """Return raw stuckfx_getStuNavi.do response for debugging (需已登录)."""
-    http = _require_login(session_id, request)
+    http = _require_login(session_id)
     params = sessions[session_id].get("exam_params")
     if not params:
         raise HTTPException(400, "请先获取考试列表")
@@ -1553,30 +1505,6 @@ def debug_raw_score(
         timeout=15,
     )
     return JSONResponse(resp.json())
-
-
-# ═══════════════════════════════════════════════════════
-#  Debug: IP diagnostic endpoint
-# ═══════════════════════════════════════════════════════
-
-
-@app.get("/api/debug/ip")
-def debug_ip(request: Request):
-    """诊断端点：查看服务器实际接收到的 IP 相关请求头"""
-    headers = dict(request.headers)
-    return {
-        "detected_client_ip": _get_client_ip(request),
-        "request_client_host": request.client.host if request.client else None,
-        "relevant_headers": {
-            k: v for k, v in headers.items()
-            if k.lower() in (
-                "x-real-ip", "x-forwarded-for", "x-forwarded-host",
-                "x-forwarded-proto", "cf-connecting-ip", "cf-ipcountry",
-                "cf-visitor", "host", "user-agent",
-            )
-        },
-        "all_headers": headers,
-    }
 
 
 # ═══════════════════════════════════════════════════════
