@@ -142,10 +142,10 @@ async def security_headers_middleware(request: Request, call_next):
     )
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: https:; "
-        "connect-src 'self'; "
+        "connect-src 'self' https://static.cloudflareinsights.com; "
         "font-src 'self'; "
         "object-src 'none'; "
         "base-uri 'self'; "
