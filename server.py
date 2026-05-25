@@ -225,17 +225,14 @@ def _session(sid: str, request: Request | None = None) -> requests.Session:
     s = sessions[sid]
     s["_at"] = time.time()
 
-    # IP/UA 绑定校验
+    # IP 变化仅记录日志，不阻塞 (CDN 边缘节点 IPv4/IPv6 切换属于正常行为)
     if request and s.get("client_ip"):
         current_ip = _get_client_ip(request)
         if not _ips_equal(current_ip, s["client_ip"]):
-            logger.warning(
-                f"会话 {sid[:8]} IP 不匹配: stored={s['client_ip']} current={current_ip}"
+            logger.info(
+                f"会话 {sid[:8]} IP 变化: {s['client_ip']} -> {current_ip}"
             )
-            raise HTTPException(
-                403,
-                f"会话验证失败 (当前IP: {current_ip}, 会话IP: {s['client_ip']})，请刷新页面重试"
-            )
+            s["client_ip"] = current_ip
 
     return s["http"]
 
