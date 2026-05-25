@@ -230,7 +230,10 @@ def _session(sid: str, request: Request | None = None) -> requests.Session:
             logger.warning(
                 f"会话 {sid[:8]} IP 不匹配: stored={s['client_ip']} current={current_ip}"
             )
-            raise HTTPException(403, "会话验证失败，请刷新页面重试")
+            raise HTTPException(
+                403,
+                f"会话验证失败 (当前IP: {current_ip}, 会话IP: {s['client_ip']})，请刷新页面重试"
+            )
 
     return s["http"]
 
@@ -1551,6 +1554,30 @@ def debug_raw_score(
         timeout=15,
     )
     return JSONResponse(resp.json())
+
+
+# ═══════════════════════════════════════════════════════
+#  Debug: IP diagnostic endpoint
+# ═══════════════════════════════════════════════════════
+
+
+@app.get("/api/debug/ip")
+def debug_ip(request: Request):
+    """诊断端点：查看服务器实际接收到的 IP 相关请求头"""
+    headers = dict(request.headers)
+    return {
+        "detected_client_ip": _get_client_ip(request),
+        "request_client_host": request.client.host if request.client else None,
+        "relevant_headers": {
+            k: v for k, v in headers.items()
+            if k.lower() in (
+                "x-real-ip", "x-forwarded-for", "x-forwarded-host",
+                "x-forwarded-proto", "cf-connecting-ip", "cf-ipcountry",
+                "cf-visitor", "host", "user-agent",
+            )
+        },
+        "all_headers": headers,
+    }
 
 
 # ═══════════════════════════════════════════════════════
