@@ -595,8 +595,8 @@ def create_session():
 
 
 @app.get("/api/organizations")
-def get_organizations(_admin: None = Depends(_require_admin)):
-    """获取可用学校/组织列表 (需管理认证)"""
+def get_organizations():
+    """获取可用学校/组织列表"""
     http = requests.Session()
     http.headers.update({"User-Agent": UA})
     try:
@@ -1160,8 +1160,8 @@ def save_scores_cache(
 
 
 @app.get("/api/config")
-def get_config(_admin: None = Depends(_require_admin)):
-    """读取配置 (需管理认证，敏感字段已脱敏)"""
+def get_config():
+    """读取配置 (敏感字段已脱敏)"""
     cfg = load_config()
     masked = dict(cfg)
     # 完全隐藏密码 (">>>" 用于前端识别脱敏值)
@@ -1181,8 +1181,8 @@ def get_config(_admin: None = Depends(_require_admin)):
 
 
 @app.get("/api/monitor/status")
-def monitor_status(_admin: None = Depends(_require_admin)):
-    """获取监测状态 (需管理认证)"""
+def monitor_status():
+    """获取监测状态"""
     global _monitor_thread
     cfg = load_config()
     running = bool(get_monitor())
