@@ -19,7 +19,7 @@ from collections import defaultdict
 CST = timezone(timedelta(hours=8))  # UTC+08:00 中国标准时间
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Form, Query, Request, Cookie, Depends
+from fastapi import FastAPI, HTTPException, Form, Query, Request, Cookie, Header, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 import requests
@@ -123,6 +123,8 @@ app = FastAPI(
     version="1.2.0",
     root_path=APP_ROOT,
     servers=[{"url": APP_ROOT}] if APP_ROOT else None,
+    docs_url=None,
+    openapi_url=None,
 )
 
 
@@ -205,10 +207,13 @@ def _require_login(sid: str) -> requests.Session:
 
 def _require_admin(
     admin_token: str = Cookie(None, alias="admin_token"),
+    x_admin_key: str = Header(None, alias="X-Admin-Key"),
 ) -> None:
-    """验证管理 API 密钥 (来自 Cookie)"""
-    if not admin_token or admin_token != get_api_key():
-        raise HTTPException(401, "管理认证失败，请刷新页面重试")
+    """验证管理 API 密钥 (Header X-Admin-Key 或 admin_token Cookie)"""
+    key = get_api_key()
+    if (x_admin_key and x_admin_key == key) or (admin_token and admin_token == key):
+        return
+    raise HTTPException(401, "管理认证失败：需要有效的 API 密钥")
 
 
 def _check_rate_limit(request: Request, username: str):
@@ -1517,24 +1522,14 @@ STATIC.mkdir(exist_ok=True)
 
 @app.get("/")
 def index():
-    """Serve the frontend SPA and set admin auth cookie"""
+    """Serve the frontend SPA"""
     index_file = STATIC / "index.html"
     if index_file.exists():
-        response = FileResponse(index_file)
+        return FileResponse(index_file)
     else:
-        response = HTMLResponse(
+        return HTMLResponse(
             "<h1>Frontend not found. Create static/index.html</h1>"
         )
-    # 设置管理认证 Cookie (非 HttpOnly，前端无需读取)
-    response.set_cookie(
-        key="admin_token",
-        value=get_api_key(),
-        path="/",
-        samesite="lax",
-        secure=False,
-        httponly=True,
-    )
-    return response
 
 
 # Mount static files after defining / so it doesn't shadow it

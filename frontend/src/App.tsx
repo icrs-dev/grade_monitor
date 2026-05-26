@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { api } from './api';
+import { api, getAdminKey, setAdminKey, clearAdminKey } from './api';
 import type {
   Config,
   MonitorStatus,
@@ -60,10 +60,24 @@ export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [monitorStatus, setMonitorStatus] = useState<MonitorStatus | null>(null);
 
+  // Admin key for protected endpoints
+  const [adminKey, setAdminKeyState] = useState<string>(getAdminKey() || '');
+
   // Toast trigger helper
   const showToast = (msg: string, type: 'info' | 'ok' | 'err' = 'info') => {
     setToastMsg(msg);
     setToastType(type);
+  };
+
+  // Admin key management
+  const handleSetAdminKey = (key: string) => {
+    setAdminKey(key);
+    setAdminKeyState(key);
+  };
+
+  const handleClearAdminKey = () => {
+    clearAdminKey();
+    setAdminKeyState('');
   };
 
   // Initialize config, monitor status
@@ -232,18 +246,22 @@ export default function App() {
 
       await api('/api/login', { method: 'POST', body: loginForm });
 
-      // Save credentials if rememberMe is selected
+      // Save credentials if rememberMe is selected (requires admin key)
       if (rememberMe) {
-        const configForm = new FormData();
-        configForm.append('org_id', selectedOrgId);
-        configForm.append('username', username);
-        configForm.append('password', password);
-        configForm.append('monitor_interval', String(config?.monitor_interval || 3600));
-        configForm.append('tg_chat_id', config?.tg_chat_id || '');
-        await api('/api/config', { method: 'POST', body: configForm });
-        // Reload config
-        const updatedCfg = await api<Config>('/api/config');
-        setConfig(updatedCfg);
+        try {
+          const configForm = new FormData();
+          configForm.append('org_id', selectedOrgId);
+          configForm.append('username', username);
+          configForm.append('password', password);
+          configForm.append('monitor_interval', String(config?.monitor_interval || 3600));
+          configForm.append('tg_chat_id', config?.tg_chat_id || '');
+          await api('/api/config', { method: 'POST', body: configForm });
+          // Reload config
+          const updatedCfg = await api<Config>('/api/config');
+          setConfig(updatedCfg);
+        } catch {
+          // Credential save requires admin key — skip silently if not set
+        }
       }
 
       // Fetch exams list
@@ -676,6 +694,9 @@ export default function App() {
                     config={config}
                     status={monitorStatus}
                     currentExamIdx={selectedExamIdx}
+                    adminKey={adminKey}
+                    onSetAdminKey={handleSetAdminKey}
+                    onClearAdminKey={handleClearAdminKey}
                     onToggle={handleMonitorToggle}
                     onCheckNow={handleManualCheck}
                     onSaveConfig={handleSaveConfig}

@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import type { Config, MonitorStatus } from '../types';
-import { Bell, Play, Square, RefreshCcw, ChevronDown, Check, AlertTriangle } from 'lucide-react';
+import { Bell, Play, Square, RefreshCcw, ChevronDown, Check, AlertTriangle, Key, Lock } from 'lucide-react';
 
 interface MonitorPanelProps {
   config: Config;
   status: MonitorStatus | null;
   currentExamIdx: number;
+  adminKey: string;
+  onSetAdminKey: (key: string) => void;
+  onClearAdminKey: () => void;
   onToggle: () => void;
   onCheckNow: () => void;
   onSaveConfig: (fields: Partial<Config>) => Promise<void>;
@@ -16,6 +19,9 @@ export default function MonitorPanel({
   config,
   status,
   currentExamIdx,
+  adminKey,
+  onSetAdminKey,
+  onClearAdminKey,
   onToggle,
   onCheckNow,
   onSaveConfig,
@@ -28,6 +34,8 @@ export default function MonitorPanel({
   const [saving, setSaving] = useState(false);
   const [sendingTg, setSendingTg] = useState(false);
   const [tgStatus, setTgStatus] = useState<{ type: 'ok' | 'err'; msg: string } | null>(null);
+  const [keyInput, setKeyInput] = useState('');
+  const [keyError, setKeyError] = useState('');
 
   // Sync inputs with config props when config updates
   React.useEffect(() => {
@@ -35,6 +43,17 @@ export default function MonitorPanel({
     if (config.tg_chat_id) setTgChatId(config.tg_chat_id);
     if (config.monitor_interval) setIntervalVal(config.monitor_interval);
   }, [config]);
+
+  const handleSetKey = () => {
+    const trimmed = keyInput.trim();
+    if (!trimmed) {
+      setKeyError('请输入 API 密钥');
+      return;
+    }
+    onSetAdminKey(trimmed);
+    setKeyInput('');
+    setKeyError('');
+  };
 
   const handleIntervalChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = parseInt(e.target.value);
@@ -92,9 +111,51 @@ export default function MonitorPanel({
   };
 
   const isRunning = status?.running || false;
+  const hasKey = !!adminKey;
 
   return (
     <div className="bg-white dark:bg-apple-bg-darkSec border border-neutral-100 dark:border-neutral-900 rounded-2xl p-6 space-y-6 animate-fade-in">
+      {/* Admin Key Section */}
+      {hasKey ? (
+        <div className="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-500 bg-emerald-500/5 border border-emerald-500/10 rounded-xl px-4 py-2.5">
+          <Key size={12} />
+          <span className="font-medium">API 密钥已验证</span>
+          <button
+            onClick={onClearAdminKey}
+            className="ml-auto text-apple-text-lightSecondary dark:text-apple-text-darkSecondary hover:text-red-500 apple-transition"
+          >
+            清除
+          </button>
+        </div>
+      ) : (
+        <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/10 space-y-3">
+          <div className="flex items-center gap-2 text-xs font-semibold text-amber-600 dark:text-amber-500">
+            <Lock size={12} />
+            管理功能需要 API 密钥认证
+          </div>
+          <p className="text-[11px] text-apple-text-lightSecondary dark:text-apple-text-darkSecondary">
+            请从服务器启动日志或 config.json 中获取 api_key，输入后即可使用监测与通知功能。
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              value={keyInput}
+              onChange={(e) => { setKeyInput(e.target.value); setKeyError(''); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSetKey(); }}
+              placeholder="输入 API 密钥..."
+              className="flex-1 px-3 py-2 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-transparent text-sm text-apple-text-lightPrimary dark:text-apple-text-darkPrimary placeholder-neutral-400 focus:outline-none focus:border-amber-500 apple-transition"
+            />
+            <button
+              onClick={handleSetKey}
+              className="px-4 py-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-500 text-xs font-semibold hover:bg-amber-500/20 apple-transition"
+            >
+              验证
+            </button>
+          </div>
+          {keyError && <p className="text-[11px] text-red-500">{keyError}</p>}
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-wrap gap-4 items-center justify-between">
         <div className="flex items-center gap-3">
@@ -114,12 +175,14 @@ export default function MonitorPanel({
         <div className="flex gap-2">
           <button
             onClick={onToggle}
+            disabled={!hasKey}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold apple-transition
               ${
                 isRunning
                   ? 'bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20'
                   : 'bg-apple-text-lightPrimary dark:bg-apple-text-darkPrimary text-apple-bg-light dark:text-apple-bg-dark hover:opacity-90'
               }
+              disabled:opacity-30 disabled:cursor-not-allowed
             `}
           >
             {isRunning ? (
@@ -136,7 +199,8 @@ export default function MonitorPanel({
           </button>
           <button
             onClick={onCheckNow}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-full border border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-apple-text-lightPrimary dark:text-apple-text-darkPrimary hover:bg-neutral-50 dark:hover:bg-neutral-900/50 apple-transition"
+            disabled={!hasKey}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full border border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-apple-text-lightPrimary dark:text-apple-text-darkPrimary hover:bg-neutral-50 dark:hover:bg-neutral-900/50 apple-transition disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <RefreshCcw size={10} />
             立即检查
@@ -153,8 +217,8 @@ export default function MonitorPanel({
           <select
             value={interval}
             onChange={handleIntervalChange}
-            disabled={saving}
-            className="bg-transparent text-sm font-semibold text-apple-text-lightPrimary dark:text-apple-text-darkPrimary focus:outline-none cursor-pointer"
+            disabled={saving || !hasKey}
+            className="bg-transparent text-sm font-semibold text-apple-text-lightPrimary dark:text-apple-text-darkPrimary focus:outline-none cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <option value="1800">30 分钟</option>
             <option value="3600">1 小时</option>
@@ -219,8 +283,9 @@ export default function MonitorPanel({
                   value={tgToken}
                   onChange={(e) => setTgToken(e.target.value)}
                   onBlur={handleBlurSave}
+                  disabled={!hasKey}
                   placeholder="123456789:ABCdefGhI..."
-                  className="w-full px-4 py-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-transparent text-apple-text-lightPrimary dark:text-apple-text-darkPrimary placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-apple-blue-light dark:focus:border-apple-blue-dark apple-transition text-xs"
+                  className="w-full px-4 py-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-transparent text-apple-text-lightPrimary dark:text-apple-text-darkPrimary placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-apple-blue-light dark:focus:border-apple-blue-dark apple-transition text-xs disabled:opacity-30"
                 />
               </div>
 
@@ -233,8 +298,9 @@ export default function MonitorPanel({
                   value={tgChatId}
                   onChange={(e) => setTgChatId(e.target.value)}
                   onBlur={handleBlurSave}
+                  disabled={!hasKey}
                   placeholder="例如: 987654321"
-                  className="w-full px-4 py-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-transparent text-apple-text-lightPrimary dark:text-apple-text-darkPrimary placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-apple-blue-light dark:focus:border-apple-blue-dark apple-transition text-xs"
+                  className="w-full px-4 py-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-transparent text-apple-text-lightPrimary dark:text-apple-text-darkPrimary placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-apple-blue-light dark:focus:border-apple-blue-dark apple-transition text-xs disabled:opacity-30"
                 />
               </div>
             </div>
@@ -247,7 +313,7 @@ export default function MonitorPanel({
               <button
                 type="button"
                 onClick={handleTelegramSend}
-                disabled={sendingTg || !tgToken.trim() || !tgChatId.trim()}
+                disabled={sendingTg || !tgToken.trim() || !tgChatId.trim() || !hasKey}
                 className="px-4 py-2 rounded-full border border-apple-blue-light dark:border-apple-blue-dark text-apple-blue-light dark:text-apple-blue-dark hover:bg-apple-blue-light/5 dark:hover:bg-apple-blue-dark/5 text-xs font-semibold apple-transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
               >
                 {sendingTg ? (
