@@ -777,19 +777,23 @@ def get_exams(session_id: str = Query(...)):
 
 @app.get("/api/scores/{exam_index}")
 def get_scores(
-    exam_index: int, session_id: str = Query(...),
+    exam_index: str, session_id: str = Query(...),
 ):
     """获取单次考试的详细成绩 (需已登录)"""
+    try:
+        idx = int(exam_index)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "考试编号格式无效")
     http = _require_login(session_id)
     params = sessions[session_id].get("exam_params")
     if not params:
         raise HTTPException(400, "请先获取考试列表")
 
     exams = params["exams"]
-    if exam_index < 0 or exam_index >= len(exams):
-        raise HTTPException(404, f"考试编号 {exam_index} 不存在")
+    if idx < 0 or idx >= len(exams):
+        raise HTTPException(404, f"考试编号 {idx} 不存在")
 
-    exam = exams[exam_index]
+    exam = exams[idx]
     try:
         resp = http.post(
             f"{BASE2}/stuckfx_getStuNavi.do",
@@ -1489,17 +1493,21 @@ def bing_markdown_page():
 
 @app.get("/api/debug/raw-score/{exam_index}")
 def debug_raw_score(
-    exam_index: int, session_id: str = Query(...),
+    exam_index: str, session_id: str = Query(...),
 ):
     """Return raw stuckfx_getStuNavi.do response for debugging (需已登录)."""
+    try:
+        idx = int(exam_index)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "考试编号格式无效")
     http = _require_login(session_id)
     params = sessions[session_id].get("exam_params")
     if not params:
         raise HTTPException(400, "请先获取考试列表")
     exams = params["exams"]
-    if exam_index < 0 or exam_index >= len(exams):
+    if idx < 0 or idx >= len(exams):
         raise HTTPException(404, "考试编号不存在")
-    exam = exams[exam_index]
+    exam = exams[idx]
     resp = http.post(
         f"{BASE2}/stuckfx_getStuNavi.do",
         data={
