@@ -783,7 +783,8 @@ def get_scores(
     try:
         idx = int(exam_index)
     except (ValueError, TypeError):
-        raise HTTPException(400, "考试编号格式无效")
+        logger.warning(f"非法的考试编号 (scores): {exam_index!r}")
+        raise HTTPException(400, f"考试编号格式无效: {exam_index}")
     http = _require_login(session_id)
     params = sessions[session_id].get("exam_params")
     if not params:
@@ -990,7 +991,8 @@ def send_telegram(
     try:
         idx = int(exam_index)
     except (ValueError, TypeError):
-        raise HTTPException(400, "考试编号格式无效")
+        logger.warning(f"非法的考试编号 (telegram): {exam_index!r}")
+        raise HTTPException(400, f"考试编号格式无效: {exam_index}")
     if idx < 0 or idx >= len(exams):
         raise HTTPException(404, "考试编号不存在")
 
@@ -1499,7 +1501,8 @@ def debug_raw_score(
     try:
         idx = int(exam_index)
     except (ValueError, TypeError):
-        raise HTTPException(400, "考试编号格式无效")
+        logger.warning(f"非法的考试编号 (debug): {exam_index!r}")
+        raise HTTPException(400, f"考试编号格式无效: {exam_index}")
     http = _require_login(session_id)
     params = sessions[session_id].get("exam_params")
     if not params:

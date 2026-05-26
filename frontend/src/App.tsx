@@ -338,6 +338,10 @@ export default function App() {
 
   // Load Score detail for clicked exam
   const handleExamSelect = async (idx: number) => {
+    if (isNaN(idx) || !Number.isInteger(idx) || idx < 0) {
+      console.error('handleExamSelect called with invalid index:', idx);
+      return;
+    }
     setSelectedExamIdx(idx);
     setLoadingScore(true);
     setScoreDetail(null);
@@ -511,6 +515,9 @@ export default function App() {
   };
 
   const handleSendTelegram = async (examIdx: number, token: string, chatId: string) => {
+    if (isNaN(examIdx) || !Number.isInteger(examIdx) || examIdx < 0) {
+      throw new Error('考试编号无效');
+    }
     // If has session, use standard tg dispatch
     if (sid) {
       try {
