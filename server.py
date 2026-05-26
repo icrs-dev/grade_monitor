@@ -775,6 +775,93 @@ def get_exams(session_id: str = Query(...)):
     }
 
 
+@app.get("/api/scores/all")
+def get_all_scores(session_id: str = Query(...)):
+    """批量获取所有考试的详细成绩 (需已登录)"""
+    http = _require_login(session_id)
+    params = sessions[session_id].get("exam_params")
+    if not params:
+        raise HTTPException(400, "请先获取考试列表")
+
+    exams = params["exams"]
+    results = []
+    for idx, exam in enumerate(exams):
+        try:
+            resp = http.post(
+                f"{BASE2}/stuckfx_getStuNavi.do",
+                data={
+                    "ksdm": exam["ksdm"],
+                    "kldm": exam["kldm"],
+                    "ksid": params["ksid"],
+                    "bjdm": params["bjdm"],
+                    "njdm": params["njdm"],
+                    "kmdm": "",
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": f"{BASE2}/web/stu/ckfx.jsp",
+                },
+                timeout=15,
+            )
+            data = resp.json()
+        except requests.RequestException as e:
+            logger.warning(f"获取考试 {exam['name']} 成绩失败: {e}")
+            results.append(
+                {
+                    "exam_name": exam["name"],
+                    "exam_date": exam.get("date", ""),
+                    "error": str(e),
+                }
+            )
+            continue
+
+        if not data.get("res"):
+            results.append(
+                {
+                    "exam_name": exam["name"],
+                    "exam_date": exam.get("date", ""),
+                    "error": data.get("msg", "获取成绩失败"),
+                }
+            )
+            continue
+
+        cj = data.get("cjpmbrkm", {})
+        bj = data.get("bjcjjizhi", {})
+
+        subjects = []
+        for km in data.get("gkksxx", []):
+            subjects.append(
+                {
+                    "name": km.get("KMMC", ""),
+                    "score": km.get("KSCJ", ""),
+                    "class_rank": km.get("BJPM", ""),
+                    "grade_rank": km.get("NJPM", ""),
+                    "class_avg": km.get("BJPJF", ""),
+                    "grade_avg": km.get("NJPJF", ""),
+                }
+            )
+
+        results.append(
+            {
+                "exam_name": exam["name"],
+                "exam_date": exam.get("date", ""),
+                "total_score": cj.get("ZF", ""),
+                "class_rank": cj.get("BJPM", ""),
+                "grade_rank": cj.get("JFPM", ""),
+                "total_students": bj.get("ZRS", ""),
+                "subjects": subjects,
+            }
+        )
+
+    return {
+        "student": {
+            "name": params.get("student_name", ""),
+        },
+        "exams": results,
+    }
+
+
 @app.get("/api/scores/{exam_index}")
 def get_scores(
     exam_index: str, session_id: str = Query(...),
@@ -875,93 +962,6 @@ def get_scores(
                 classmates, key=lambda x: x.get("ZF", 0) or 0, reverse=True
             )[:10]
         ],
-    }
-
-
-@app.get("/api/scores/all")
-def get_all_scores(session_id: str = Query(...)):
-    """批量获取所有考试的详细成绩 (需已登录)"""
-    http = _require_login(session_id)
-    params = sessions[session_id].get("exam_params")
-    if not params:
-        raise HTTPException(400, "请先获取考试列表")
-
-    exams = params["exams"]
-    results = []
-    for idx, exam in enumerate(exams):
-        try:
-            resp = http.post(
-                f"{BASE2}/stuckfx_getStuNavi.do",
-                data={
-                    "ksdm": exam["ksdm"],
-                    "kldm": exam["kldm"],
-                    "ksid": params["ksid"],
-                    "bjdm": params["bjdm"],
-                    "njdm": params["njdm"],
-                    "kmdm": "",
-                },
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Referer": f"{BASE2}/web/stu/ckfx.jsp",
-                },
-                timeout=15,
-            )
-            data = resp.json()
-        except requests.RequestException as e:
-            logger.warning(f"获取考试 {exam['name']} 成绩失败: {e}")
-            results.append(
-                {
-                    "exam_name": exam["name"],
-                    "exam_date": exam.get("date", ""),
-                    "error": str(e),
-                }
-            )
-            continue
-
-        if not data.get("res"):
-            results.append(
-                {
-                    "exam_name": exam["name"],
-                    "exam_date": exam.get("date", ""),
-                    "error": data.get("msg", "获取成绩失败"),
-                }
-            )
-            continue
-
-        cj = data.get("cjpmbrkm", {})
-        bj = data.get("bjcjjizhi", {})
-
-        subjects = []
-        for km in data.get("gkksxx", []):
-            subjects.append(
-                {
-                    "name": km.get("KMMC", ""),
-                    "score": km.get("KSCJ", ""),
-                    "class_rank": km.get("BJPM", ""),
-                    "grade_rank": km.get("NJPM", ""),
-                    "class_avg": km.get("BJPJF", ""),
-                    "grade_avg": km.get("NJPJF", ""),
-                }
-            )
-
-        results.append(
-            {
-                "exam_name": exam["name"],
-                "exam_date": exam.get("date", ""),
-                "total_score": cj.get("ZF", ""),
-                "class_rank": cj.get("BJPM", ""),
-                "grade_rank": cj.get("JFPM", ""),
-                "total_students": bj.get("ZRS", ""),
-                "subjects": subjects,
-            }
-        )
-
-    return {
-        "student": {
-            "name": params.get("student_name", ""),
-        },
-        "exams": results,
     }
 
 
