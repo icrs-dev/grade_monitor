@@ -25,6 +25,20 @@ export function hasAdminKey(): boolean {
   return !!getAdminKey();
 }
 
+const SESSION_ID_KEY = 'cloudmarking_sid';
+
+export function getSessionId(): string | null {
+  return sessionStorage.getItem(SESSION_ID_KEY);
+}
+
+export function setSessionId(sid: string): void {
+  sessionStorage.setItem(SESSION_ID_KEY, sid);
+}
+
+export function clearSessionId(): void {
+  sessionStorage.removeItem(SESSION_ID_KEY);
+}
+
 export async function api<T>(
   url: string,
   opts: RequestInit & { json?: boolean; raw?: boolean } = {}

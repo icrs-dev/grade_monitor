@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { api, getAdminKey, setAdminKey, clearAdminKey } from './api';
+import { api, getAdminKey, setAdminKey, clearAdminKey, getSessionId, setSessionId, clearSessionId } from './api';
 import type {
   Config,
   MonitorStatus,
@@ -29,7 +29,7 @@ export default function App() {
   const [toastType, setToastType] = useState<'info' | 'ok' | 'err'>('info');
 
   // Multi-step form values
-  const [sid, setSid] = useState<string | null>(null);
+  const [sid, setSid] = useState<string | null>(getSessionId());
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
   const [selectedOrgName, setSelectedOrgName] = useState<string | null>(null);
   const [username, setUsername] = useState<string>('');
@@ -133,6 +133,23 @@ export default function App() {
       } catch (e) {
         console.error('Failed to load monitor status', e);
       }
+
+      // 3. Restore session if exists (survives page refresh)
+      const storedSid = getSessionId();
+      if (storedSid) {
+        try {
+          const examRes = await api<{ student: StudentInfo; school: string; exams: Exam[] }>(
+            `/api/exams?session_id=${storedSid}`
+          );
+          setStudent(examRes.student);
+          setSchool(examRes.school);
+          setExams(examRes.exams);
+          setSid(storedSid);
+          setCurrentStep(4);
+        } catch {
+          clearSessionId();
+        }
+      }
     }
 
     init();
@@ -188,6 +205,7 @@ export default function App() {
         const sdata = await api<{ session_id: string }>('/api/session', { method: 'POST' });
         activeSid = sdata.session_id;
         setSid(activeSid);
+        setSessionId(activeSid);
       }
 
       const form = new FormData();
@@ -204,6 +222,7 @@ export default function App() {
       setCurrentStep(3);
     } catch (e: any) {
       setSid(null);
+      clearSessionId();
       showToast(e.message || '获取验证码失败，请重试', 'err');
     } finally {
       setLoading(false);
@@ -307,6 +326,7 @@ export default function App() {
       if (e.message.includes('验证码')) {
         // Reset session on captcha error to force a new captcha
         setSid(null);
+        clearSessionId();
         setCaptchaError(e.message);
       } else {
         setCaptchaError(e.message || '登录失败，请检查账户或密码');
@@ -536,6 +556,7 @@ export default function App() {
   // Sign out / reset
   const handleLogout = () => {
     setSid(null);
+    clearSessionId();
     setExams([]);
     setSelectedExamIdx(-1);
     setScoreDetail(null);
