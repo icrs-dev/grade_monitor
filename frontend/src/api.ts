@@ -57,7 +57,18 @@ export async function api<T>(
   }
 
   if (!response.ok) {
-    throw new Error(data.detail || `请求失败 (${response.status})`);
+    let msg: string;
+    const detail = data.detail;
+    if (typeof detail === 'string') {
+      msg = detail;
+    } else if (Array.isArray(detail)) {
+      msg = detail.map((e: any) => e.msg || JSON.stringify(e)).join('; ');
+    } else if (detail) {
+      msg = JSON.stringify(detail);
+    } else {
+      msg = `请求失败 (${response.status})`;
+    }
+    throw new Error(msg);
   }
 
   return data as T;
