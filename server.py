@@ -963,7 +963,7 @@ def get_all_scores(session_id: str = Query(...)):
 @app.post("/api/telegram")
 def send_telegram(
     session_id: str = Form(...),
-    exam_index: int = Form(...),
+    exam_index: str = Form("0"),
     tg_token: str = Form(...),
     tg_chat_id: str = Form(...),
 ):
@@ -983,10 +983,14 @@ def send_telegram(
         raise HTTPException(400, "请先获取考试列表")
 
     exams = params["exams"]
-    if exam_index < 0 or exam_index >= len(exams):
+    try:
+        idx = int(exam_index)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "考试编号格式无效")
+    if idx < 0 or idx >= len(exams):
         raise HTTPException(404, "考试编号不存在")
 
-    exam = exams[exam_index]
+    exam = exams[idx]
 
     try:
         resp = http.post(
@@ -1121,7 +1125,7 @@ def save_config_api(
     tg_token: str = Form(""),
     tg_chat_id: str = Form(""),
     monitor_enabled: bool = Form(False),
-    monitor_interval: int = Form(3600),
+    monitor_interval: str = Form("3600"),
     last_scores: str = Form(""),
     _admin: None = Depends(_require_admin),
 ):
@@ -1137,8 +1141,12 @@ def save_config_api(
         cfg["tg_token"] = tg_token
     cfg["tg_chat_id"] = tg_chat_id
     cfg["monitor_enabled"] = monitor_enabled
-    if monitor_interval >= 600:
-        cfg["monitor_interval"] = monitor_interval
+    try:
+        interval_val = int(monitor_interval)
+        if interval_val >= 600:
+            cfg["monitor_interval"] = interval_val
+    except (ValueError, TypeError):
+        pass
     if last_scores:
         try:
             cfg["last_scores"] = json.loads(last_scores)

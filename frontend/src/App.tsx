@@ -497,7 +497,8 @@ export default function App() {
       form.append('tg_token', updated.tg_token);
     }
     form.append('tg_chat_id', updated.tg_chat_id);
-    form.append('monitor_interval', String(updated.monitor_interval));
+    const interval = parseInt(String(updated.monitor_interval));
+    form.append('monitor_interval', String(isNaN(interval) ? 3600 : interval));
 
     try {
       await api('/api/config', { method: 'POST', body: form });
