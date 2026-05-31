@@ -80,38 +80,43 @@ export default function App() {
     setAdminKeyState('');
   };
 
-  // Initialize config, monitor status
+  // Initialize config, monitor status, and session — all in parallel
   useEffect(() => {
     async function init() {
-      // 1. Fetch saved config
-      try {
-        const cfg = await api<Config>('/api/config');
+      const storedSid = getSessionId();
+
+      // Fire all independent requests concurrently
+      const [cfgResult, stResult, examResult] = await Promise.allSettled([
+        api<Config>('/api/config'),
+        api<MonitorStatus>('/api/monitor/status'),
+        storedSid
+          ? api<{ student: StudentInfo; school: string; exams: Exam[] }>(`/api/exams?session_id=${storedSid}`)
+          : Promise.resolve(null),
+      ]);
+
+      // 1. Process config
+      if (cfgResult.status === 'fulfilled') {
+        const cfg = cfgResult.value;
         setConfig(cfg);
-        if (cfg.org_id) {
-          setSelectedOrgId(cfg.org_id);
-        }
+        if (cfg.org_id) setSelectedOrgId(cfg.org_id);
         if (cfg.username) setUsername(cfg.username);
-        // Pre-fill rememberMe if data exists
-        if (cfg.username && cfg.org_id) {
-          setRememberMe(true);
-        }
-      } catch (e) {
-        console.error('Failed to load saved config', e);
+        if (cfg.username && cfg.org_id) setRememberMe(true);
+      } else {
+        console.error('Failed to load config', cfgResult.reason);
       }
 
-      // 2. Fetch Monitor Status & Cached scores
-      try {
-        const st = await api<MonitorStatus>('/api/monitor/status');
+      // 2. Process monitor status & cached scores
+      const hasLiveSession = examResult.status === 'fulfilled' && examResult.value !== null;
+      if (stResult.status === 'fulfilled') {
+        const st = stResult.value;
         setMonitorStatus(st);
 
-        // Auto-load cached scores if they exist and user is not logged in yet
-        if (st.has_scores && st.last_scores) {
+        // Use cached scores only if no live session was restored
+        if (!hasLiveSession && st.has_scores && st.last_scores) {
           const cached = st.last_scores;
           setStudent(cached.student);
           setSchool(cached.school);
           setIsCachedData(true);
-
-          // Map cached exams to Exam list
           const mappedExams = cached.exams.map((e: any) => {
             const hasDetail = e.total_score !== undefined && e.total_score !== '';
             return {
@@ -126,29 +131,24 @@ export default function App() {
               _cachedData: hasDetail ? e : null,
             };
           });
-
           setExams(mappedExams);
           setCurrentStep(4);
         }
-      } catch (e) {
-        console.error('Failed to load monitor status', e);
+      } else {
+        console.error('Failed to load monitor status', stResult.reason);
       }
 
-      // 3. Restore session if exists (survives page refresh)
-      const storedSid = getSessionId();
-      if (storedSid) {
-        try {
-          const examRes = await api<{ student: StudentInfo; school: string; exams: Exam[] }>(
-            `/api/exams?session_id=${storedSid}`
-          );
-          setStudent(examRes.student);
-          setSchool(examRes.school);
-          setExams(examRes.exams);
-          setSid(storedSid);
-          setCurrentStep(4);
-        } catch {
-          clearSessionId();
-        }
+      // 3. Restore session (takes priority over cached data)
+      if (hasLiveSession && examResult.value) {
+        const examRes = examResult.value;
+        setStudent(examRes.student);
+        setSchool(examRes.school);
+        setExams(examRes.exams);
+        setSid(storedSid!);
+        setIsCachedData(false);
+        setCurrentStep(4);
+      } else if (storedSid && examResult.status === 'rejected') {
+        clearSessionId();
       }
     }
 
