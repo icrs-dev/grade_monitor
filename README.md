@@ -22,14 +22,16 @@
 
 ## 🛠️ Linux 一键部署服务化工具 (`install.sh`)
 
-为了极大降低部署门槛，项目根目录下配备了保姆级 Linux 自动安装管理脚本。在您的 Linux 系统上（支持 Ubuntu, Debian, CentOS 等），只需运行以下命令：
+为了极大降低部署门槛，我们提供了一键式安装脚本。在您的 Linux 系统上（支持 Ubuntu, Debian, CentOS 等），只需直接执行以下一行命令即可自动下载、授权并启动部署菜单：
 
 ```bash
-# 给脚本赋予执行权限
-chmod +x install.sh
+curl -fsSL https://raw.githubusercontent.com/LuckyMeng-code/grade_monitor/master/install.sh -o install.sh && chmod +x install.sh && sudo ./install.sh
+```
 
-# 以 root 权限启动安装菜单
-sudo ./install.sh
+对于国内网络环境受限的服务器，可以使用以下国内加速代理命令：
+
+```bash
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/LuckyMeng-code/grade_monitor/master/install.sh -o install.sh && chmod +x install.sh && sudo ./install.sh
 ```
 
 ### 部署菜单选项：
