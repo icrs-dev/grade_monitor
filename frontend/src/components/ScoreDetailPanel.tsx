@@ -1,11 +1,12 @@
 import type { ScoreDetail } from '../types';
-import { ArrowUpRight, ArrowDownRight, Minus } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, Minus, ChevronRight } from 'lucide-react';
 
 interface ScoreDetailPanelProps {
   data: ScoreDetail;
+  onSelectSubject?: (subjectCode: string, subjectName: string) => void;
 }
 
-export default function ScoreDetailPanel({ data }: ScoreDetailPanelProps) {
+export default function ScoreDetailPanel({ data, onSelectSubject }: ScoreDetailPanelProps) {
   const { summary, subjects, strengths, weaknesses, changes, classmates } = data;
 
   // Stat Card renderer
@@ -131,6 +132,11 @@ export default function ScoreDetailPanel({ data }: ScoreDetailPanelProps) {
       {/* Subject Scores Table */}
       {subjects && subjects.length > 0 && (
         <div className="w-full overflow-hidden border border-neutral-100 dark:border-neutral-900 rounded-2xl bg-white dark:bg-apple-bg-darkSec">
+          <div className="px-6 py-4 bg-neutral-50/30 dark:bg-neutral-900/10 border-b border-neutral-100 dark:border-neutral-900 flex justify-between items-center">
+            <span className="text-xs font-semibold text-apple-text-lightSecondary dark:text-apple-text-darkSecondary">
+              单科成绩明细 (点击学科行可查看小题分析与答题原卷)
+            </span>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left border-collapse">
               <thead>
@@ -153,31 +159,59 @@ export default function ScoreDetailPanel({ data }: ScoreDetailPanelProps) {
                   <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-apple-text-lightSecondary dark:text-apple-text-darkSecondary">
                     年级均分
                   </th>
+                  <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-apple-text-lightSecondary dark:text-apple-text-darkSecondary text-right">
+                    操作
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-900">
-                {subjects.map((subj) => (
-                  <tr key={subj.name} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-900/20 apple-transition">
-                    <td className="px-6 py-4 font-semibold text-apple-text-lightPrimary dark:text-apple-text-darkPrimary">
-                      {subj.name}
-                    </td>
-                    <td className="px-6 py-4 font-medium text-apple-text-lightPrimary dark:text-apple-text-darkPrimary">
-                      {subj.score || '-'}
-                    </td>
-                    <td className="px-6 py-4 text-neutral-600 dark:text-neutral-400">
-                      {subj.class_rank || '-'}
-                    </td>
-                    <td className="px-6 py-4 text-neutral-600 dark:text-neutral-400">
-                      {subj.grade_rank || '-'}
-                    </td>
-                    <td className="px-6 py-4 text-neutral-500 dark:text-neutral-500">
-                      {subj.class_avg || '-'}
-                    </td>
-                    <td className="px-6 py-4 text-neutral-500 dark:text-neutral-500">
-                      {subj.grade_avg || '-'}
-                    </td>
-                  </tr>
-                ))}
+                {subjects.map((subj) => {
+                  const isClickable = !!subj.code;
+                  return (
+                    <tr
+                      key={subj.name}
+                      onClick={() => {
+                        if (isClickable && onSelectSubject) {
+                          onSelectSubject(subj.code, subj.name);
+                        }
+                      }}
+                      className={`apple-transition ${
+                        isClickable
+                          ? 'cursor-pointer hover:bg-neutral-50/80 dark:hover:bg-neutral-900/30'
+                          : ''
+                      }`}
+                    >
+                      <td className="px-6 py-4 font-semibold text-apple-text-lightPrimary dark:text-apple-text-darkPrimary">
+                        {subj.name}
+                      </td>
+                      <td className="px-6 py-4 font-medium text-apple-text-lightPrimary dark:text-apple-text-darkPrimary">
+                        {subj.score || '-'}
+                      </td>
+                      <td className="px-6 py-4 text-neutral-600 dark:text-neutral-400">
+                        {subj.class_rank || '-'}
+                      </td>
+                      <td className="px-6 py-4 text-neutral-600 dark:text-neutral-400">
+                        {subj.grade_rank || '-'}
+                      </td>
+                      <td className="px-6 py-4 text-neutral-500 dark:text-neutral-500">
+                        {subj.class_avg || '-'}
+                      </td>
+                      <td className="px-6 py-4 text-neutral-500 dark:text-neutral-500">
+                        {subj.grade_avg || '-'}
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        {isClickable ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-apple-blue-light dark:text-apple-blue-dark">
+                            分析
+                            <ChevronRight size={12} className="stroke-[2.5]" />
+                          </span>
+                        ) : (
+                          <span className="text-xs text-neutral-300 dark:text-neutral-700">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

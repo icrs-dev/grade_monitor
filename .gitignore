@@ -25,3 +25,12 @@ venv/
 # 系统
 Thumbs.db
 .DS_Store
+
+# Golang
+grade_monitor
+grade_monitor.exe
+*.exe
+
+# Node / React
+node_modules/
+dist/

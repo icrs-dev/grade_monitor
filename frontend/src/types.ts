@@ -31,6 +31,7 @@ export interface ExamListResponse {
 
 export interface SubjectScore {
   name: string;
+  code: string;
   score: string;
   class_rank: string;
   grade_rank: string;
@@ -99,4 +100,28 @@ export interface TrendExamPoint {
   grade_rank: number;
   total_students: number;
   subjects: { name: string; score: number }[];
+}
+
+export interface QuestionDetail {
+  bh: string;
+  name: string;
+  full_score: string;
+  score: string;
+  class_ratio: string;
+  grade_ratio: string;
+}
+
+export interface SubjectAnalysisResponse {
+  subject_score: string;
+  class_rank: string;
+  grade_rank: string;
+  questions: QuestionDetail[];
+}
+
+export interface AnswerSheetResponse {
+  base_url: string;
+  barcode: string;
+  page_count: number;
+  image_urls: string[];
+  omr: string;
 }

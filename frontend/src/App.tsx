@@ -16,6 +16,7 @@ import CaptchaInput from './components/CaptchaInput';
 import StudentInfoCard from './components/StudentInfoCard';
 import ExamList from './components/ExamList';
 import ScoreDetailPanel from './components/ScoreDetailPanel';
+import SubjectDetailModal from './components/SubjectDetailModal';
 import TrendChart from './components/TrendChart';
 import MonitorPanel from './components/MonitorPanel';
 import Toast from './components/Toast';
@@ -50,6 +51,8 @@ export default function App() {
   const [scoreDetail, setScoreDetail] = useState<ScoreDetail | null>(null);
   const [loadingScore, setLoadingScore] = useState<boolean>(false);
   const [isCachedData, setIsCachedData] = useState<boolean>(false);
+  const [selectedSubj, setSelectedSubj] = useState<{ code: string; name: string } | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
 
   // Trend chart state
   const [showTrend, setShowTrend] = useState<boolean>(false);
@@ -706,7 +709,15 @@ export default function App() {
                         <span className="text-xs">正在分析考次数据...</span>
                       </div>
                     ) : (
-                      scoreDetail && <ScoreDetailPanel data={scoreDetail} />
+                      scoreDetail && (
+                        <ScoreDetailPanel
+                          data={scoreDetail}
+                          onSelectSubject={(code, name) => {
+                            setSelectedSubj({ code, name });
+                            setIsModalOpen(true);
+                          }}
+                        />
+                      )
                     )
                   ) : (
                     <div className="h-64 rounded-2xl border border-dashed border-neutral-200 dark:border-neutral-800 flex flex-col items-center justify-center text-center p-6 text-apple-text-lightSecondary dark:text-apple-text-darkSecondary bg-neutral-50/20 dark:bg-neutral-900/10">
@@ -747,6 +758,16 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Subject Detail & Answer Sheet Modal */}
+      <SubjectDetailModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        examIndex={selectedExamIdx}
+        subjectCode={selectedSubj?.code || ''}
+        subjectName={selectedSubj?.name || ''}
+        sessionId={sid}
+      />
     </div>
   );
 }
