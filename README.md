@@ -22,16 +22,16 @@
 
 ## 🛠️ Linux 一键部署服务化工具 (`install.sh`)
 
-为了极大降低部署门槛，我们提供了一键式安装脚本。在您的 Linux 系统上（支持 Ubuntu, Debian, CentOS 等），只需直接执行以下一行命令即可自动下载、授权并启动部署菜单：
+为了极大降低部署门槛，并绕过 GitHub Raw 节点的 CDN 缓存延迟，我们提供了一键式克隆与安装命令。在您的 Linux 系统上（支持 Ubuntu, Debian, CentOS 等），只需直接执行以下一行命令即可自动克隆、进入目录并拉起部署菜单：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LuckyMeng-code/grade_monitor/master/install.sh -o install.sh && chmod +x install.sh && sudo ./install.sh
+git clone https://github.com/LuckyMeng-code/grade_monitor.git && cd grade_monitor && chmod +x install.sh && sudo ./install.sh
 ```
 
-对于国内网络环境受限的服务器，可以使用以下国内加速代理命令：
+对于国内网络环境受限的服务器，建议使用以下国内镜像极速克隆命令（无直连限制，且秒级同步无缓存）：
 
 ```bash
-curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/LuckyMeng-code/grade_monitor/master/install.sh -o install.sh && chmod +x install.sh && sudo ./install.sh
+git clone https://mirror.ghproxy.com/https://github.com/LuckyMeng-code/grade_monitor.git && cd grade_monitor && chmod +x install.sh && sudo ./install.sh
 ```
 
 ### 部署菜单选项：
