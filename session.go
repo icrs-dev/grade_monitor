@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -504,8 +505,8 @@ func (s *UserSession) GetSubjectDetail(examIdx int, subjectCode string) (map[str
 			"name":        getString(q["STMC"]),
 			"full_score":  getString(q["STMF"]),
 			"score":       getString(q["GRDF"]),
-			"class_ratio": getString(q["BJDFL"]),
-			"grade_ratio": getString(q["NJDFL"]),
+			"class_ratio": formatRatio(q["BJDFL"]),
+			"grade_ratio": formatRatio(q["NJDFL"]),
 		})
 	}
 
@@ -630,4 +631,48 @@ func getString(val interface{}) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+// 辅助函数：格式化得分率，将 0.7350 形式的 decimal 转换为 "73.50%"，如果是 "73.50" 或 "73.50%" 则保持不变
+func formatRatio(val interface{}) string {
+	if val == nil {
+		return "0%"
+	}
+	var f float64
+	switch v := val.(type) {
+	case float64:
+		f = v
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return "0%"
+		}
+		// 如果已经是带有 % 的格式，直接处理并返回
+		if strings.Contains(trimmed, "%") {
+			parsed, err := strconv.ParseFloat(strings.ReplaceAll(trimmed, "%", ""), 64)
+			if err == nil {
+				return fmt.Sprintf("%.2f%%", parsed)
+			}
+			return trimmed
+		}
+		parsed, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil {
+			return trimmed
+		}
+		f = parsed
+	default:
+		strVal := fmt.Sprintf("%v", v)
+		parsed, err := strconv.ParseFloat(strVal, 64)
+		if err != nil {
+			return strVal
+		}
+		f = parsed
+	}
+
+	// 如果数值 <= 1.0 (表示它是 0~1 的小数比率，如 0.7350)，则乘 100 得到百分比
+	if f <= 1.0 {
+		return fmt.Sprintf("%.2f%%", f*100)
+	}
+	// 如果大于 1.0，说明已经是百分数（如 73.50），直接保留两位小数加 %
+	return fmt.Sprintf("%.2f%%", f)
 }
