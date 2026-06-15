@@ -24,7 +24,7 @@ type MonitorExamDetail struct {
 }
 
 // Telegram HTML 清理预编译正则
-var reDangerousHTML = regexp.MustCompile(`<\s*(script|iframe|object|embed|link|style|meta|applet|form|input|base|frame|frameset|head|html|body)[^>]*>.*?<\s*/\s*\1\s*>`)
+var reDangerousHTML = regexp.MustCompile(`<\s*(?:script|iframe|object|embed|link|style|meta|applet|form|input|base|frame|frameset|head|html|body)[^>]*>.*?<\s*/\s*(?:script|iframe|object|embed|link|style|meta|applet|form|input|base|frame|frameset|head|html|body)\s*>`)
 
 var (
 	monitorCancel    context.CancelFunc
