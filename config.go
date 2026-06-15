@@ -2,9 +2,9 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -62,20 +62,12 @@ func LoadConfig() *Config {
 	}
 
 	currentCfg = DefaultConfig()
-	file, err := os.Open(ConfigFileName)
+	data, err := os.ReadFile(ConfigFileName)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// 文件不存在则直接返回默认配置
 			return currentCfg
 		}
 		log.Printf("读取配置文件 %s 错误: %v", ConfigFileName, err)
-		return currentCfg
-	}
-	defer file.Close()
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		log.Printf("读取配置文件数据错误: %v", err)
 		return currentCfg
 	}
 
@@ -124,7 +116,7 @@ func GetAPIKey() string {
 
 	// 生成新的 UUID Key
 	newKey := uuid.New().String()
-	newKey = replaceAllHyphens(newKey) // 移除连字符以符合 hex 风格
+	newKey = strings.ReplaceAll(newKey, "-", "") // 移除连字符以符合 hex 风格
 	cfg.APIKey = newKey
 	if err := SaveConfig(cfg); err == nil {
 		log.Printf("已生成新管理 API 密钥: %s...", newKey[:8])
@@ -132,21 +124,9 @@ func GetAPIKey() string {
 	return newKey
 }
 
-func replaceAllHyphens(s string) string {
-	res := ""
-	for _, c := range s {
-		if c != '-' {
-			res += string(c)
-		}
-	}
-	return res
-}
-
 // GetMaskedConfig 获取脱敏后的配置，避免敏感数据泄漏给前端
 func GetMaskedConfig() map[string]interface{} {
 	cfg := LoadConfig()
-	configLock.RLock()
-	defer configLock.RUnlock()
 
 	masked := map[string]interface{}{
 		"org_id":               cfg.OrgID,

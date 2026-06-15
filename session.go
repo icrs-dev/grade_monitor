@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,12 +24,22 @@ const (
 	SessionTTL = 30 * time.Minute
 )
 
+// SSO 参数解析预编译正则
+var (
+	reYhzh    = regexp.MustCompile(`var yhzh\s*=\s*"([^"]+)"`)
+	reTxmy    = regexp.MustCompile(`var txmy\s*=\s*"([^"]+)"`)
+	reNjdm    = regexp.MustCompile(`var njdm\s*=\s*"([^"]+)"`)
+	reYhzhAlt = regexp.MustCompile(`yhzh\s*=\s*'([^']+)'`)
+	reTxmyAlt = regexp.MustCompile(`txmy\s*=\s*'([^']+)'`)
+	reNjdmAlt = regexp.MustCompile(`njdm\s*=\s*'([^']+)'`)
+)
+
 // ExamParams 缓存单次会话拉取考试列表后的基准定位数据
 type ExamParams struct {
-	KSID   string `json:"ksid"`
-	BJDM   string `json:"bjdm"`
-	NJDM   string `json:"njdm"`
-	Exams  []Exam `json:"exams"`
+	KSID  string `json:"ksid"`
+	BJDM  string `json:"bjdm"`
+	NJDM  string `json:"njdm"`
+	Exams []Exam `json:"exams"`
 }
 
 // Exam 表示云阅卷考试项
@@ -55,7 +66,7 @@ var (
 	sessionsMap sync.Map // sid -> *UserSession
 )
 
-// GetSession 获取现有会话，或创建新的会话
+// GetSession 获取现有会话
 func GetSession(sid string) (*UserSession, error) {
 	if sid == "" {
 		return nil, fmt.Errorf("会话 ID 不能为空")
@@ -67,10 +78,19 @@ func GetSession(sid string) (*UserSession, error) {
 		return sess, nil
 	}
 
+	return nil, fmt.Errorf("会话不存在")
+}
+
+// CreateSession 创建新的会话
+func CreateSession(sid string) (*UserSession, error) {
+	if sid == "" {
+		return nil, fmt.Errorf("会话 ID 不能为空")
+	}
+
 	// 创建带 CookieJar 的 http.Client
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("初始化 CookieJar 失败: %w", err)
 	}
 
 	sess := &UserSession{
@@ -212,31 +232,22 @@ func (s *UserSession) Login(orgID, username, password, captcha string) error {
 
 // helper 解析 SSO 数据
 func parseSSOParams(body string) (string, string, string, error) {
-	reYhzh := regexp.MustCompile(`var yhzh\s*=\s*"([^"]+)"`)
-	reTxmy := regexp.MustCompile(`var txmy\s*=\s*"([^"]+)"`)
-	reNjdm := regexp.MustCompile(`var njdm\s*=\s*"([^"]+)"`)
-
 	yhzhM := reYhzh.FindStringSubmatch(body)
 	txmyM := reTxmy.FindStringSubmatch(body)
 	njdmM := reNjdm.FindStringSubmatch(body)
 
 	if len(yhzhM) < 2 || len(txmyM) < 2 || len(njdmM) < 2 {
-		// 备用单引号正则
-		reYhzhAlt := regexp.MustCompile(`yhzh\s*=\s*'([^']+)'`)
-		reTxmyAlt := regexp.MustCompile(`txmy\s*=\s*'([^']+)'`)
-		reNjdmAlt := regexp.MustCompile(`njdm\s*=\s*'([^']+)'`)
-
 		yhzhM = reYhzhAlt.FindStringSubmatch(body)
 		txmyM = reTxmyAlt.FindStringSubmatch(body)
 		njdmM = reNjdmAlt.FindStringSubmatch(body)
 	}
 
 	if len(yhzhM) < 2 || len(txmyM) < 2 || len(njdmM) < 2 {
-		snippet := body
+		snippet := []rune(body)
 		if len(snippet) > 400 {
 			snippet = snippet[:400]
 		}
-		return "", "", "", fmt.Errorf("登录异常，未解析到SSO跳转密钥 (Body预览: %s)", snippet)
+		return "", "", "", fmt.Errorf("登录异常，未解析到SSO跳转密钥 (Body预览: %s)", string(snippet))
 	}
 
 	return yhzhM[1], txmyM[1], njdmM[1], nil
@@ -420,14 +431,10 @@ func (s *UserSession) GetScores(examIdx int) (map[string]interface{}, error) {
 		}
 		cmList = append(cmList, classmateItem{Name: name, Total: totalVal})
 	}
-	// 简易冒泡排序
-	for i := 0; i < len(cmList); i++ {
-		for j := i + 1; j < len(cmList); j++ {
-			if cmList[i].Total < cmList[j].Total {
-				cmList[i], cmList[j] = cmList[j], cmList[i]
-			}
-		}
-	}
+	// 标准库排序 O(n log n)
+	sort.Slice(cmList, func(i, j int) bool {
+		return cmList[i].Total > cmList[j].Total
+	})
 	var topClassmates []map[string]interface{}
 	limit := 10
 	if len(cmList) < limit {
@@ -512,9 +519,9 @@ func (s *UserSession) GetSubjectDetail(examIdx int, subjectCode string) (map[str
 
 	return map[string]interface{}{
 		"subject_score": cj["KMCJ"],
-		"class_rank":     cj["BJPM"],
-		"grade_rank":     cj["JFPM"],
-		"questions":      questions,
+		"class_rank":    cj["BJPM"],
+		"grade_rank":    cj["JFPM"],
+		"questions":     questions,
 	}, nil
 }
 
@@ -580,17 +587,21 @@ func (s *UserSession) GetAnswerSheet(examIdx int, subjectCode string) (map[strin
 	}
 
 	return map[string]interface{}{
-		"base_url":    baseURL,
-		"barcode":     barcode,
-		"page_count":  pageCount,
-		"image_urls":  imageURLs,
-		"omr":         omr,
+		"base_url":   baseURL,
+		"barcode":    barcode,
+		"page_count": pageCount,
+		"image_urls": imageURLs,
+		"omr":        omr,
 	}, nil
 }
 
 // helper POST 表单提交
 func (s *UserSession) postForm(urlStr string, data url.Values, referer string) ([]byte, error) {
-	req, err := http.NewRequest("POST", urlStr, strings.NewReader(data.Encode()))
+	var body string
+	if data != nil {
+		body = data.Encode()
+	}
+	req, err := http.NewRequest("POST", urlStr, strings.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -625,9 +636,9 @@ func getString(val interface{}) string {
 		}
 		return fmt.Sprintf("%.2f", v)
 	case int:
-		return fmt.Sprintf("%d", v)
+		return strconv.Itoa(v)
 	case int64:
-		return fmt.Sprintf("%d", v)
+		return strconv.FormatInt(v, 10)
 	default:
 		return fmt.Sprintf("%v", v)
 	}

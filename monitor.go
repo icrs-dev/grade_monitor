@@ -23,11 +23,17 @@ type MonitorExamDetail struct {
 	Data     map[string]interface{} `json:"data"`
 }
 
+// Telegram HTML 清理预编译正则
+var reDangerousHTML = regexp.MustCompile(`<\s*(script|iframe|object|embed|link|style|meta|applet|form|input|base|frame|frameset|head|html|body)[^>]*>.*?<\s*/\s*\1\s*>`)
+
 var (
-	monitorCancel context.CancelFunc
-	monitorCtx    context.Context
-	monitorLock   sync.Mutex
+	monitorCancel    context.CancelFunc
+	monitorCtx       context.Context
+	monitorLock      sync.Mutex
 	isMonitorRunning bool
+
+	// telegramClient 复用的 Telegram API HTTP 客户端
+	telegramClient = &http.Client{Timeout: 15 * time.Second}
 )
 
 // StartMonitor 后台启动自动监控轮询协程
@@ -76,9 +82,6 @@ func GetMonitorStatus() bool {
 
 // 执行监控轮询的主循环
 func monitorLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second) // 刚启动时稍等 5 秒，之后按照配置的间隔触发
-	defer ticker.Stop()
-
 	// 刚启动时立即执行一次
 	if err := performCheck(); err != nil {
 		log.Printf("监控即时检查失败: %v", err)
@@ -91,25 +94,21 @@ func monitorLoop(ctx context.Context) {
 			interval = 3600 * time.Second // 默认防刷一小时
 		}
 
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-time.After(interval):
+		case <-timer.C:
 			if err := performCheck(); err != nil {
 				log.Printf("监控轮询检查失败: %v", err)
 			}
-		case <-ticker.C:
-			// 常规心跳检查或初始延时触发
 		}
 	}
 }
 
 // PerformManualCheck 提供手动立即检查触发接口
 func PerformManualCheck() (bool, error) {
-	// 获取锁，防止和定时轮询任务冲突
-	monitorLock.Lock()
-	defer monitorLock.Unlock()
-
 	cfg := LoadConfig()
 	if cfg.OrgID == "" || cfg.Username == "" || cfg.Password == "" {
 		return false, fmt.Errorf("请先保存登录凭据")
@@ -136,7 +135,7 @@ func performCheck() error {
 // 核心成绩监测轮询逻辑，模拟完整登录、拉取、哈希并比对
 func runMonitorCheck(cfg *Config) (bool, error) {
 	nowStr := time.Now().Format(time.RFC3339)
-	
+
 	// 1. 创建独立会话
 	sess, err := GetSession("monitor_session_id")
 	if err != nil {
@@ -172,7 +171,7 @@ func runMonitorCheck(cfg *Config) (bool, error) {
 	if ocrErr != nil || len(captcha) != 4 {
 		errStr := fmt.Sprintf("验证码 OCR 自动识别失败 (已重试3次): %v", ocrErr)
 		updateMonitorError(cfg, errStr)
-		return false, fmt.Errorf(errStr)
+		return false, fmt.Errorf("%s", errStr)
 	}
 
 	// 3. 执行登录
@@ -180,11 +179,11 @@ func runMonitorCheck(cfg *Config) (bool, error) {
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "密码错误") || strings.Contains(errStr, "学籍号不存在") {
-			// 致命错误，禁用自动监控
+			// 致命错误，禁用自动监控（异步停止避免死锁）
 			cfg.MonitorEnabled = false
 			cfg.LastError = "FATAL: 凭证错误，自动监控已禁用: " + errStr
 			SaveConfig(cfg)
-			StopMonitor()
+			go StopMonitor()
 		} else {
 			updateMonitorError(cfg, fmt.Sprintf("登录失败: %v", err))
 		}
@@ -203,26 +202,40 @@ func runMonitorCheck(cfg *Config) (bool, error) {
 	examsList, _ := examsRes["exams"].([]Exam)
 
 	// 5. 循环拉取所有考试成绩以构建深度哈希
-	var allScores []MonitorExamDetail
-	for idx, e := range examsList {
-		scoreData, err := sess.GetScores(idx)
-		if err != nil {
-			log.Printf("监控拉取考试 [%s] 成绩失败: %v", e.Name, err)
-			continue
-		}
+	examCount := len(examsList)
+	allScoresArray := make([]*MonitorExamDetail, examCount)
+	var wg sync.WaitGroup
 
-		allScores = append(allScores, MonitorExamDetail{
-			ExamName: e.Name,
-			ExamDate: e.Date,
-			Data:     scoreData,
-		})
+	for idx, e := range examsList {
+		wg.Add(1)
+		go func(i int, exam Exam) {
+			defer wg.Done()
+			scoreData, err := sess.GetScores(i)
+			if err != nil {
+				log.Printf("监控拉取考试 [%s] 成绩失败: %v", exam.Name, err)
+				return
+			}
+			allScoresArray[i] = &MonitorExamDetail{
+				ExamName: exam.Name,
+				ExamDate: exam.Date,
+				Data:     scoreData,
+			}
+		}(idx, e)
+	}
+	wg.Wait()
+
+	var allScores []MonitorExamDetail
+	for _, item := range allScoresArray {
+		if item != nil {
+			allScores = append(allScores, *item)
+		}
 	}
 
 	// 6. 序列化排序计算哈希比对
 	hashInputBytes, err := json.Marshal(allScores)
 	if err != nil {
 		updateMonitorError(cfg, fmt.Sprintf("序列化比对哈希错误: %v", err))
-		return false, err
+		return false, fmt.Errorf("序列化比对哈希错误: %w", err)
 	}
 	newHash := fmt.Sprintf("%x", md5.Sum(hashInputBytes))
 
@@ -300,7 +313,7 @@ func notifyChanges(cfg *Config, allScores []MonitorExamDetail) {
 
 		var lines []string
 		lines = append(lines, fmt.Sprintf("<b>%s</b>", item.ExamName))
-		
+
 		lines = append(lines, fmt.Sprintf(
 			"总分: %v  班排: %v/%v  级排: %v",
 			bj["total_score"], bj["class_rank"], bj["total_students"], bj["grade_rank"],
@@ -351,7 +364,7 @@ func notifyChanges(cfg *Config, allScores []MonitorExamDetail) {
 // 发送 TG 消息的主函数
 func sendTelegram(token, chatID, text string) {
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-	
+
 	postData := map[string]interface{}{
 		"chat_id":    chatID,
 		"text":       text,
@@ -371,8 +384,7 @@ func sendTelegram(token, chatID, text string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := telegramClient.Do(req)
 	if err != nil {
 		log.Printf("Telegram 推送网络失败: %v", err)
 		return
@@ -387,11 +399,8 @@ func sendTelegram(token, chatID, text string) {
 
 // 移除非 Telegram 支持的 HTML 标签
 func sanitizeTelegramHTML(text string) string {
-	// 简单的清理正则
-	dangerous := `<\s*(script|iframe|object|embed|link|style|meta|applet|form|input|base|frame|frameset|head|html|body)[^>]*>.*?<\s*/\s*\1\s*>`
-	re := regexp.MustCompile(dangerous)
-	text = re.ReplaceAllString(text, "")
-	
+	text = reDangerousHTML.ReplaceAllString(text, "")
+
 	if len(text) > 4096 {
 		text = text[:4096]
 	}

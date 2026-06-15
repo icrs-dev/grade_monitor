@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,14 +16,19 @@ import (
 	"github.com/google/uuid"
 )
 
+type rateLimitEntry struct {
+	count int
+	first time.Time
+}
+
 var (
 	loginAttempts = struct {
 		sync.Mutex
-		ipMap   map[string][]time.Time
-		userMap map[string][]time.Time
+		ipMap   map[string]*rateLimitEntry
+		userMap map[string]*rateLimitEntry
 	}{
-		ipMap:   make(map[string][]time.Time),
-		userMap: make(map[string][]time.Time),
+		ipMap:   make(map[string]*rateLimitEntry),
+		userMap: make(map[string]*rateLimitEntry),
 	}
 )
 
@@ -34,33 +40,31 @@ func CheckRateLimit(ip, username string) error {
 	now := time.Now()
 	window := 15 * time.Minute
 
-	// 清理 IP 记录
-	var validIPs []time.Time
-	for _, t := range loginAttempts.ipMap[ip] {
-		if now.Sub(t) < window {
-			validIPs = append(validIPs, t)
+	checkAndReset := func(m map[string]*rateLimitEntry, key string, limit int) error {
+		entry, ok := m[key]
+		if !ok || now.Sub(entry.first) >= window {
+			m[key] = &rateLimitEntry{count: 1, first: now}
+			return nil
 		}
-	}
-	loginAttempts.ipMap[ip] = validIPs
-
-	// 清理用户名记录
-	var validUsers []time.Time
-	for _, t := range loginAttempts.userMap[username] {
-		if now.Sub(t) < window {
-			validUsers = append(validUsers, t)
+		if entry.count >= limit {
+			return fmt.Errorf("登录尝试过于频繁，请稍后再试")
 		}
+		entry.count++
+		return nil
 	}
-	loginAttempts.userMap[username] = validUsers
 
-	if len(loginAttempts.ipMap[ip]) >= 15 {
-		return fmt.Errorf("登录尝试过于频繁，请稍后再试")
+	if err := checkAndReset(loginAttempts.ipMap, ip, 15); err != nil {
+		return err
 	}
-	if len(loginAttempts.userMap[username]) >= 5 {
+	if err := checkAndReset(loginAttempts.userMap, username, 5); err != nil {
 		return fmt.Errorf("该账号登录尝试过于频繁，请稍后再试")
 	}
 
-	loginAttempts.ipMap[ip] = append(loginAttempts.ipMap[ip], now)
-	loginAttempts.userMap[username] = append(loginAttempts.userMap[username], now)
+	if len(loginAttempts.ipMap) > 10000 {
+		loginAttempts.ipMap = make(map[string]*rateLimitEntry)
+		loginAttempts.userMap = make(map[string]*rateLimitEntry)
+	}
+
 	return nil
 }
 
@@ -155,13 +159,10 @@ func requireConfigOrAdminMiddleware() gin.HandlerFunc {
 
 // Handler: 创建会话
 func createSessionHandler(c *gin.Context) {
-	// 先做一次会话清理
-	CleanExpiredSessions()
-
 	sid := uuid.New().String()
 	sid = strings.ReplaceAll(sid, "-", "")
 
-	sess, err := GetSession(sid)
+	sess, err := CreateSession(sid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
@@ -178,7 +179,7 @@ func createSessionHandler(c *gin.Context) {
 // Handler: 获取学校机构列表
 func getOrganizationsHandler(c *gin.Context) {
 	// 每次临时新起请求
-	sess, err := GetSession("temp_" + uuid.New().String())
+	sess, err := CreateSession("temp_" + uuid.New().String())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
@@ -254,9 +255,9 @@ func getCaptchaHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"captcha_image":  b64Data,
-		"captcha_text":   captchaText,
-		"ocr_available":  hasOCR,
+		"captcha_image": b64Data,
+		"captcha_text":  captchaText,
+		"ocr_available": hasOCR,
 	})
 }
 
@@ -378,33 +379,49 @@ func getAllScoresHandler(c *gin.Context) {
 		return
 	}
 
-	var results []map[string]interface{}
-	for i := range sess.ExamParams.Exams {
-		scoreData, err := sess.GetScores(i)
-		if err != nil {
-			log.Printf("获取第 %d 个考试详情成绩错误: %v", i, err)
-			continue
-		}
-		summary, _ := scoreData["summary"].(map[string]interface{})
-		subjects, _ := scoreData["subjects"].([]map[string]interface{})
+	examCount := len(sess.ExamParams.Exams)
+	results := make([]map[string]interface{}, examCount)
+	var wg sync.WaitGroup
 
-		// 精简结构匹配 TrendExamPoint 所需格式
-		results = append(results, map[string]interface{}{
-			"exam_name":      scoreData["exam_name"],
-			"exam_date":      sess.ExamParams.Exams[i].Date,
-			"total_score":    summary["total_score"],
-			"class_rank":     summary["class_rank"],
-			"grade_rank":     summary["grade_rank"],
-			"total_students": summary["total_students"],
-			"subjects":       subjects,
-		})
+	for i := range sess.ExamParams.Exams {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			scoreData, err := sess.GetScores(idx)
+			if err != nil {
+				log.Printf("获取第 %d 个考试详情成绩错误: %v", idx, err)
+				return
+			}
+			summary, _ := scoreData["summary"].(map[string]interface{})
+			subjects, _ := scoreData["subjects"].([]map[string]interface{})
+
+			// 精简结构匹配 TrendExamPoint 所需格式
+			res := map[string]interface{}{
+				"exam_name":      scoreData["exam_name"],
+				"exam_date":      sess.ExamParams.Exams[idx].Date,
+				"total_score":    summary["total_score"],
+				"class_rank":     summary["class_rank"],
+				"grade_rank":     summary["grade_rank"],
+				"total_students": summary["total_students"],
+				"subjects":       subjects,
+			}
+			results[idx] = res
+		}(i)
+	}
+	wg.Wait()
+
+	var finalResults []map[string]interface{}
+	for _, res := range results {
+		if res != nil {
+			finalResults = append(finalResults, res)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"student": map[string]string{
-			"name":  "", // 前端只需成绩数组
+			"name": "", // 前端只需成绩数组
 		},
-		"exams": results,
+		"exams": finalResults,
 	})
 }
 
@@ -488,6 +505,12 @@ func proxyImageHandler(c *gin.Context) {
 	targetURL := c.Query("url")
 	if targetURL == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "缺少 url 参数"})
+		return
+	}
+
+	parsed, err := url.Parse(targetURL)
+	if err != nil || parsed.Host != "sxoma.com:8088" {
+		c.JSON(http.StatusForbidden, gin.H{"detail": "禁止的代理目标"})
 		return
 	}
 

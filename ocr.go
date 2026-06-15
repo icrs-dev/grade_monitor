@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -11,10 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
-// RecognizeCaptchaCaptcha 自动识别验证码，具有本地 Python ddddocr 桥接和外部 API 识别逻辑
+// ocrHTTPClient 复用的 OCR 外部 API HTTP 客户端
+var ocrHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+// RecognizeCaptcha 自动识别验证码，具有本地 Python ddddocr 桥接和外部 API 识别逻辑
 func RecognizeCaptcha(imgBytes []byte, customOcrAPI string) (string, error) {
 	if customOcrAPI != "" {
 		return recognizeViaExternalAPI(imgBytes, customOcrAPI)
@@ -28,7 +33,7 @@ func recognizeViaLocalPython(imgBytes []byte) (string, error) {
 	// 创建临时验证码图片文件
 	tmpDir := os.TempDir()
 	tmpFile := filepath.Join(tmpDir, fmt.Sprintf("captcha_%d.png", time.Now().UnixNano()))
-	
+
 	err := os.WriteFile(tmpFile, imgBytes, 0644)
 	if err != nil {
 		return "", fmt.Errorf("写入临时文件失败: %w", err)
@@ -37,11 +42,14 @@ func recognizeViaLocalPython(imgBytes []byte) (string, error) {
 
 	// 构造 python -c 识别脚本
 	pythonScript := fmt.Sprintf(`import ddddocr; ocr=ddddocr.DdddOcr(show_ad=False); print(ocr.classification(open(r'%s', 'rb').read()))`, tmpFile)
-	
+
 	// 首先尝试 python, 其次尝试 python3
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	var out bytes.Buffer
 	var stderr bytes.Buffer
-	cmd := exec.Command("python", "-c", pythonScript)
+	cmd := exec.CommandContext(ctx, "python", "-c", pythonScript)
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 
@@ -50,7 +58,7 @@ func recognizeViaLocalPython(imgBytes []byte) (string, error) {
 		// 尝试使用 python3
 		out.Reset()
 		stderr.Reset()
-		cmd3 := exec.Command("python3", "-c", pythonScript)
+		cmd3 := exec.CommandContext(ctx, "python3", "-c", pythonScript)
 		cmd3.Stdout = &out
 		cmd3.Stderr = &stderr
 		err = cmd3.Run()
@@ -91,8 +99,7 @@ func recognizeViaExternalAPI(imgBytes []byte, apiURL string) (string, error) {
 	}
 	req.Header.Set("Content-Type", bodyWriter.FormDataContentType())
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := ocrHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("请求外部 OCR 接口超时/错误: %w", err)
 	}
@@ -127,17 +134,25 @@ func isAlphanumeric(s string) bool {
 	return true
 }
 
-// HasLocalPythonOCR 判定当前环境是否具备本地 Python 与 ddddocr 条件
+var (
+	ocrAvailable  bool
+	ocrDetectOnce sync.Once
+)
+
+// HasLocalPythonOCR 判定当前环境是否具备本地 Python 与 ddddocr 条件（仅检测一次，结果缓存）
 func HasLocalPythonOCR() bool {
-	// 运行简单测试命令
-	cmd := exec.Command("python", "-c", "import ddddocr")
-	if err := cmd.Run(); err == nil {
-		return true
-	}
-	cmd3 := exec.Command("python3", "-c", "import ddddocr")
-	if err := cmd3.Run(); err == nil {
-		return true
-	}
-	log.Println("本地检测未安装 python + ddddocr 库，自动识别将通过外部 API 或提示用户手动辅助")
-	return false
+	ocrDetectOnce.Do(func() {
+		cmd := exec.Command("python", "-c", "import ddddocr")
+		if err := cmd.Run(); err == nil {
+			ocrAvailable = true
+			return
+		}
+		cmd3 := exec.Command("python3", "-c", "import ddddocr")
+		if err := cmd3.Run(); err == nil {
+			ocrAvailable = true
+			return
+		}
+		log.Println("本地检测未安装 python + ddddocr 库，自动识别将通过外部 API 或提示用户手动辅助")
+	})
+	return ocrAvailable
 }

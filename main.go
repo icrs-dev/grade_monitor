@@ -33,6 +33,15 @@ func main() {
 		StartMonitor()
 	}
 
+	// 启动定期清理过期会话的协程
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			CleanExpiredSessions()
+		}
+	}()
+
 	// 4. 创建 Gin 引擎
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -67,7 +76,7 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	
+
 	log.Println("收到关闭信号，正在安全下线服务...")
 
 	// 停止监控协程并让当前网络连接完成
@@ -75,7 +84,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Web 服务强制关闭异常: %v", err)
 	}
@@ -91,9 +100,9 @@ type rewriteHandler struct {
 func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	path := req.URL.Path
 	if strings.HasPrefix(path, "/static//api/") {
-		req.URL.Path = "/api/" + path[13:]
+		req.URL.Path = "/api/" + strings.TrimPrefix(path, "/static//api/")
 	} else if strings.HasPrefix(path, "/static/api/") {
-		req.URL.Path = "/api/" + path[12:]
+		req.URL.Path = "/api/" + strings.TrimPrefix(path, "/static/api/")
 	} else if path == "/static//api" || path == "/static/api" {
 		req.URL.Path = "/api"
 	}
