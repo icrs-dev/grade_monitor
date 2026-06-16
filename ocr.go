@@ -105,7 +105,7 @@ func recognizeViaExternalAPI(imgBytes []byte, apiURL string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if err != nil {
 		return "", err
 	}

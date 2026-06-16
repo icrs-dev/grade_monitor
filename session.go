@@ -161,7 +161,7 @@ func (s *UserSession) GetCaptchaBytes() ([]byte, string, error) {
 		return nil, "", fmt.Errorf("拉取验证码状态码异常: %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
 	if err != nil {
 		return nil, "", err
 	}
@@ -191,7 +191,7 @@ func (s *UserSession) Login(orgID, username, password, captcha string) error {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
 	if err != nil {
 		return err
 	}
@@ -618,7 +618,7 @@ func (s *UserSession) postForm(urlStr string, data url.Values, referer string) (
 	}
 	defer resp.Body.Close()
 
-	return io.ReadAll(resp.Body)
+	return io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
 }
 
 // 辅助函数：安全将 interface{} 转换为 string，防止 float64 或其它类型断言失败变为空字符串

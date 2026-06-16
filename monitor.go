@@ -137,12 +137,11 @@ func runMonitorCheck(cfg *Config) (bool, error) {
 	nowStr := time.Now().Format(time.RFC3339)
 
 	// 1. 创建独立会话
-	sess, err := GetSession("monitor_session_id")
+	sess, err := CreateSession("monitor_session_id")
 	if err != nil {
 		updateMonitorError(cfg, err.Error())
 		return false, err
 	}
-	sess.LoggedIn = false // 强制重新登录
 
 	if err := sess.InitCookie(); err != nil {
 		updateMonitorError(cfg, fmt.Sprintf("首页Cookie建立失败: %v", err))
@@ -401,8 +400,9 @@ func sendTelegram(token, chatID, text string) {
 func sanitizeTelegramHTML(text string) string {
 	text = reDangerousHTML.ReplaceAllString(text, "")
 
-	if len(text) > 4096 {
-		text = text[:4096]
+	runes := []rune(text)
+	if len(runes) > 4096 {
+		text = string(runes[:4096])
 	}
 	return text
 }

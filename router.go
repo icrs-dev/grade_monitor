@@ -1,7 +1,8 @@
 package main
 
 import (
-	"bytes"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -73,9 +74,8 @@ func RequireAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		apiKey := GetAPIKey()
 		xAdminKey := c.GetHeader("X-Admin-Key")
-		adminToken, err := c.Cookie("admin_token")
 
-		if (xAdminKey != "" && xAdminKey == apiKey) || (err == nil && adminToken == apiKey) {
+		if xAdminKey != "" && subtle.ConstantTimeCompare([]byte(xAdminKey), []byte(apiKey)) == 1 {
 			c.Next()
 			return
 		}
@@ -105,15 +105,15 @@ func setupRoutes(apiGroup *gin.RouterGroup) {
 	apiGroup.GET("/scores/:exam_index/sheet/:subject_code", requireLoginMiddleware(), getAnswerSheetHandler)
 
 	// 3. 通用辅助
-	apiGroup.GET("/proxy/image", proxyImageHandler)
+	apiGroup.GET("/proxy/image", requireLoginMiddleware(), proxyImageHandler)
 
 	// 4. 配置修改相关 (需 Admin-Key 校验)
-	apiGroup.GET("/config", requireConfigOrAdminMiddleware(), getConfigHandler)
+	apiGroup.GET("/config", RequireAdmin(), getConfigHandler)
 	apiGroup.POST("/config", RequireAdmin(), saveConfigHandler)
 	apiGroup.POST("/config/scores", RequireAdmin(), saveConfigScoresHandler)
 
 	// 5. 自动监控服务相关 (需 Admin-Key 校验)
-	apiGroup.GET("/monitor/status", getMonitorStatusHandler)
+	apiGroup.GET("/monitor/status", RequireAdmin(), getMonitorStatusHandler)
 	apiGroup.POST("/monitor/start", RequireAdmin(), startMonitorHandler)
 	apiGroup.POST("/monitor/stop", RequireAdmin(), stopMonitorHandler)
 	apiGroup.POST("/monitor/check", RequireAdmin(), checkMonitorHandler)
@@ -145,14 +145,6 @@ func requireLoginMiddleware() gin.HandlerFunc {
 		}
 
 		c.Set("session", sess)
-		c.Next()
-	}
-}
-
-// 对于 GET /api/config，若已经配过密码，且请求没带 admin key，可以只读，但由于原逻辑，非敏感直接脱敏后可以读
-func requireConfigOrAdminMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 无需严格 RequireAdmin，我们直接在 Handler 里面脱敏即可，与 FastAPI 保持一致
 		c.Next()
 	}
 }
@@ -243,7 +235,7 @@ func getCaptchaHandler(c *gin.Context) {
 		return
 	}
 
-	b64Data := fmt.Sprintf("data:%s;base64,%s", ct, strings.TrimSpace(strings.ReplaceAll(string(encodeBase64(imgBytes)), "\n", "")))
+	b64Data := fmt.Sprintf("data:%s;base64,%s", ct, base64.StdEncoding.EncodeToString(imgBytes))
 
 	// 自动识别 (本地有 Python 且装了 ddddocr 时)
 	captchaText := ""
@@ -259,66 +251,6 @@ func getCaptchaHandler(c *gin.Context) {
 		"captcha_text":  captchaText,
 		"ocr_available": hasOCR,
 	})
-}
-
-// base64 简易编码
-func encodeBase64(data []byte) []byte {
-	const encodeStd = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	var buf bytes.Buffer
-	w := &base64Encoder{w: &buf, enc: encodeStd}
-	w.Write(data)
-	w.Close()
-	return buf.Bytes()
-}
-
-type base64Encoder struct {
-	w   *bytes.Buffer
-	enc string
-	buf [3]byte
-	nb  int
-}
-
-func (e *base64Encoder) Write(p []byte) (int, error) {
-	for i, b := range p {
-		e.buf[e.nb] = b
-		e.nb++
-		if e.nb == 3 {
-			e.writeBlock()
-			e.nb = 0
-		}
-		if i == len(p)-1 {
-			return len(p), nil
-		}
-	}
-	return len(p), nil
-}
-
-func (e *base64Encoder) writeBlock() {
-	val := uint32(e.buf[0])<<16 | uint32(e.buf[1])<<8 | uint32(e.buf[2])
-	e.w.WriteByte(e.enc[val>>18&0x3F])
-	e.w.WriteByte(e.enc[val>>12&0x3F])
-	e.w.WriteByte(e.enc[val>>6&0x3F])
-	e.w.WriteByte(e.enc[val&0x3F])
-}
-
-func (e *base64Encoder) Close() error {
-	if e.nb > 0 {
-		var val uint32
-		if e.nb == 1 {
-			val = uint32(e.buf[0]) << 16
-			e.w.WriteByte(e.enc[val>>18&0x3F])
-			e.w.WriteByte(e.enc[val>>12&0x3F])
-			e.w.WriteByte('=')
-			e.w.WriteByte('=')
-		} else {
-			val = uint32(e.buf[0])<<16 | uint32(e.buf[1])<<8
-			e.w.WriteByte(e.enc[val>>18&0x3F])
-			e.w.WriteByte(e.enc[val>>12&0x3F])
-			e.w.WriteByte(e.enc[val>>6&0x3F])
-			e.w.WriteByte('=')
-		}
-	}
-	return nil
 }
 
 // Handler: 登录
@@ -500,6 +432,8 @@ func getAnswerSheetHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
+var proxyHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 // Handler: 代理网络图片拉取，零拷贝直接管道化流式转发
 func proxyImageHandler(c *gin.Context) {
 	targetURL := c.Query("url")
@@ -514,7 +448,7 @@ func proxyImageHandler(c *gin.Context) {
 		return
 	}
 
-	resp, err := http.Get(targetURL)
+	resp, err := proxyHTTPClient.Get(targetURL)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"detail": fmt.Sprintf("代理图片网络错误: %v", err)})
 		return

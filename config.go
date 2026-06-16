@@ -1,7 +1,13 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -77,6 +83,8 @@ func LoadConfig() *Config {
 		return currentCfg
 	}
 
+	temp.Password = decryptPassword(temp.Password, temp.APIKey)
+
 	// 补全默认值
 	if temp.MonitorInterval <= 0 {
 		temp.MonitorInterval = 3600
@@ -92,13 +100,16 @@ func SaveConfig(cfg *Config) error {
 
 	currentCfg = cfg
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	tempCfg := *cfg
+	tempCfg.Password = encryptPassword(tempCfg.Password, tempCfg.APIKey)
+
+	data, err := json.MarshalIndent(&tempCfg, "", "  ")
 	if err != nil {
 		log.Printf("序列化配置 JSON 错误: %v", err)
 		return err
 	}
 
-	err = os.WriteFile(ConfigFileName, data, 0644)
+	err = os.WriteFile(ConfigFileName, data, 0600)
 	if err != nil {
 		log.Printf("保存配置文件错误: %v", err)
 		return err
@@ -152,4 +163,54 @@ func GetMaskedConfig() map[string]interface{} {
 	}
 
 	return masked
+}
+
+func encryptPassword(password string, apiKey string) string {
+	if password == "" || apiKey == "" {
+		return password
+	}
+	key := sha256.Sum256([]byte(apiKey))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return password
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return password
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return password
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(password), nil)
+	return hex.EncodeToString(ciphertext)
+}
+
+func decryptPassword(encrypted string, apiKey string) string {
+	if encrypted == "" || apiKey == "" {
+		return encrypted
+	}
+	data, err := hex.DecodeString(encrypted)
+	if err != nil {
+		return encrypted
+	}
+	key := sha256.Sum256([]byte(apiKey))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return encrypted
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return encrypted
+	}
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return encrypted
+	}
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return encrypted
+	}
+	return string(plaintext)
 }
